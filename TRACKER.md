@@ -18,7 +18,7 @@
 | Repo URL | https://github.com/mominchaudhry/portfolio-rag |
 | Live demo URL | https://ask-my-portfolio-jjco5b2ux-mominchaudhrys-projects.vercel.app — deploy READY & renders, but **Vercel Deployment Protection (SSO) is ON** → 401 to the public. Flip OFF before sharing (S7). Vercel project `ask-my-portfolio` (`prj_k4hHPUckW5CKXz3SrkxdcqAVEOsJ`), GitHub repo connected for auto-deploy. |
 | Vector DB | Neon Postgres 18.4 + `pgvector` 0.8.1 (free tier) — provisioned: project `super-credit-31396538` (`ask-my-portfolio`, aws-us-east-1). Reachability verified. `DATABASE_URL` in `.env.local`; **still needs adding to Vercel env** (do at S3 with the API keys). |
-| Models | Answers: `claude-sonnet-4-6` (or `claude-opus-4-8`) · Embeddings: OpenAI `text-embedding-3-small` |
+| Models | Answers: `claude-sonnet-4-6` (Haiku 4.5 / Opus 4.8 as S6 ablations) via **Vercel AI Gateway** · Embeddings: OpenAI `text-embedding-3-small` · Eval: **Promptfoo + Claude-as-judge** |
 | Headline metric | _TBD — fill from eval scorecard_ |
 | Overall status | **S1 DONE** — next session: S2 (ingest pipeline) |
 
@@ -93,10 +93,12 @@ portfolio-rag/
 
 ## External references
 - Vercel AI SDK (streaming, `useChat`): https://sdk.vercel.ai/docs
+- Vercel AI Gateway (model routing, observability): https://vercel.com/docs/ai-gateway
 - Anthropic API (messages, streaming): https://docs.anthropic.com
 - OpenAI embeddings (`text-embedding-3-small`): https://platform.openai.com/docs/guides/embeddings
 - Neon + pgvector: https://neon.tech/docs/extensions/pgvector
-- RAGAS (eval metrics): https://docs.ragas.io
+- Promptfoo (eval harness, CI gate): https://www.promptfoo.dev/docs
+- Postgres full-text search (hybrid retrieval, S6): https://www.postgresql.org/docs/current/textsearch.html
 
 ---
 
@@ -136,12 +138,11 @@ portfolio-rag/
 ```
 
 **Recommended stack:** Next.js (App Router, API routes for retrieve+generate),
-Vercel AI SDK for streaming, Anthropic Claude (answers) + OpenAI embeddings,
-pgvector on Neon (free) or Vercel Postgres, RAGAS (Python eval) **or** an
-`evalite`/Vitest TS eval. **Decision to record in S0:** RAGAS (Python, richer
-metrics, second-language signal) vs TS eval (single toolchain). Default
-recommendation: **RAGAS** for the headline metrics, since groundedness/faithfulness
-scoring is its strength and it reads as real LLMOps.
+Vercel AI SDK for streaming via **Vercel AI Gateway** (model-as-string + free
+cost/latency telemetry), Anthropic Claude (answers) + OpenAI embeddings,
+pgvector on Neon (free). **Eval: Promptfoo (TS) with a Claude-as-judge** — single
+toolchain in this TS/Next repo and a clean GitHub Actions CI gate (S9). (RAGAS was
+the original S0 default; superseded 2026-06-14 — see Decision log S1.5.)
 
 ---
 
@@ -154,7 +155,7 @@ scoring is its strength and it reads as real LLMOps.
 | Embeddings — corpus ingest | OpenAI `text-embedding-3-small` @ $0.02/1M tok; corpus ~50–150k tok | **< $0.01** one-time, re-run on each ingest |
 | Embeddings — per query | ~1 short embedding/query | **negligible** (~$0.000002/query) |
 | Answer generation | Claude Sonnet ~2–4k input + ~400 output / query → **~$0.01–0.02/query** | scales with traffic |
-| Eval runs (RAGAS, LLM-as-judge) | 48 Q × several metrics ≈ **$0.20–1.00 per full run** | per run during S5/S6 tuning |
+| Eval runs (Promptfoo, Claude-as-judge) | 48 Q × several metrics ≈ **$0.20–1.00 per full run** | per run during S5/S6 tuning |
 | **Build-phase total** | iteration + ~10–30 eval runs | **~$2–8 one-time** |
 | **Steady monthly** (handful of demo users) | | **~$0–5** |
 
@@ -302,7 +303,9 @@ baseline you'll ablate in S6).
 1. `app/api/ask/route.ts`: embed the question → top-k similarity search → build a
    **grounded prompt** (system prompt instructs: answer only from context, cite
    chunk IDs, refuse if context insufficient).
-2. Stream the answer with the Vercel AI SDK + `@ai-sdk/anthropic`.
+2. Stream the answer with the Vercel AI SDK, routing the model through **Vercel AI Gateway**
+   (`"anthropic/claude-sonnet-4-6"` string, not `@ai-sdk/anthropic` direct) — gives free
+   cost/latency telemetry for S7 and one-line model swaps for the S6 ablation. See S1.5 decision.
 3. **Citations:** return the retrieved chunks (id, source, section, snippet) alongside
    the stream so the UI can render inline citation links.
 4. **Guardrail:** if max similarity < threshold (tune later), return a graceful "I
@@ -342,10 +345,11 @@ with the **baseline** numbers recorded.
    answerable questions (with reference answers / expected facts) and **deliberately
    unanswerable** ones (e.g. "What's Momin's GPA?", "Does he speak French?") for the
    refusal set.
-2. Build the harness (`npm run eval`): run each question through the live pipeline,
-   score with **RAGAS** (or chosen TS framework): **answer correctness, faithfulness/
-   groundedness, context precision/recall**, plus a custom **refusal-accuracy** metric
-   over the unanswerable set.
+2. Build the harness (`npm run eval`) with **Promptfoo (TS)** — see S1.5 decision (replaces
+   RAGAS for single-toolchain + a clean S9 CI gate): run each question through the live
+   pipeline and score **answer correctness, faithfulness/groundedness, context precision/
+   recall** via a **Claude-as-judge** assertion, plus a custom **refusal-accuracy** metric
+   over the unanswerable set (incl. the deliberately-omitted Coinbase/phone questions).
 3. Print a scorecard table; write results to `evals/results/<timestamp>.json`.
 4. **Record the baseline** numbers (naive chunking, no rerank) in this doc — they are
    the "before" for S6's before/after story.
@@ -359,10 +363,14 @@ numbers committed and recorded in Handoff. Eval set covers answerable + unanswer
 **Goal:** A measurable before/after improvement, which is the headline metric.
 **Prerequisites:** S5 done (baseline exists).
 **Tasks:**
-1. Pick 1–2 improvements with the biggest expected lift: **reranking** (e.g. Cohere
-   Rerank free trial, or an LLM reranker), **semantic/structure-aware chunking**, or
-   **hybrid (keyword + vector)** retrieval.
+1. Pick 1–2 improvements with the biggest expected lift (see S1.5 decision): **hybrid
+   (keyword + vector) retrieval = pgvector + Postgres `tsvector`** (free, in-DB — do this
+   first) and a **reranker** (Cohere Rerank free trial, or a Haiku LLM-reranker). Optionally
+   ablate **semantic/structure-aware chunking**.
 2. Implement behind a flag so baseline vs improved are both runnable.
+2b. **Model ablations (cheap eval-story wins, via AI Gateway one-line swaps):** A/B the
+   **embedding model** (3-small vs Gemini vs open) and the **answer model** (Sonnet vs Haiku 4.5
+   vs Opus 4.8). Record measured deltas + cost — don't pick "best" blind.
 3. Re-run `npm run eval`; **record the delta** (e.g. "answer correctness 72% → 90%").
 4. Tune the refusal threshold from S3 using the unanswerable set; aim for high refusal
    accuracy with zero hallucinated facts.
@@ -423,12 +431,45 @@ full hybrid (BM25 + vector) retrieval · swap to an open embedding model and com
   - **Vector DB:** Neon Postgres + `pgvector` (free tier, serverless driver
     `@neondatabase/serverless`). Reason: zero-cost, hosted, same Vercel-friendly stack;
     matches the doc's recommendation.
-  - **Eval framework:** RAGAS (Python). Reason: richer groundedness/faithfulness metrics
-    read as real LLMOps and add a second-language signal — the doc's default. Revisit at
-    S5 if the Python toolchain proves friction-heavy (TS/`evalite` is the fallback).
+  - **Eval framework:** ~~RAGAS (Python)~~ **SUPERSEDED 2026-06-14 → Promptfoo (TS).**
+    Original reason was richer groundedness/faithfulness metrics + a second-language signal,
+    but the Python toolchain is friction in an all-TS/Next repo. See the 2026-06-14 entry below.
   - **Embedding model:** OpenAI `text-embedding-3-small` (1536-dim, cheap).
   - **Answer model:** `claude-sonnet-4-6` (latest Sonnet); only move to `claude-opus-4-8`
     if S6 eval shows it materially wins (cost/latency tradeoff noted in the cost table).
+- **S1.5 (2026-06-14) — tech-stack review (full options/tradeoff analysis):** Reframe — the
+  corpus is tiny (~50–200 chunks), so infra choices optimize for *honest skill signaling, ~$0
+  cost, a demoable hosted demo, and a production-instinct story*, NOT throughput. Decisions:
+  - **Eval framework: Promptfoo (TS)** replaces RAGAS. Reason: single toolchain (no Python venv
+    in a TS/Next repo), config lives in-repo, and — critically — a **GitHub Actions nightly CI
+    eval gate (S9) is far cleaner in TS/Promptfoo**, which is the strongest LLMOps signal here.
+    Still score correctness / faithfulness / refusal-accuracy via a **Claude-as-judge** assertion
+    (writing the judge ourselves shows we understand the metrics RAGAS would import). OSS, $0 infra;
+    pay only judge-model tokens (~$0.20–1 / full run). Fallback if we want the literal "RAGAS"
+    keyword: keep RAGAS isolated in `/evals` with its own `requirements.txt` — not chosen.
+  - **Model access: route through Vercel AI Gateway** (`"anthropic/claude-sonnet-4-6"` strings)
+    instead of `@ai-sdk/anthropic` direct. Reason: free per-request cost+latency telemetry (feeds
+    S7's measured $/query + p95), one-line model swaps for the S6 ablation, provider fallbacks,
+    single key. Keep OpenAI embeddings (direct or via gateway).
+  - **Embedding & answer model = S6 ABLATIONS, not baseline switches.** Baseline stays
+    `text-embedding-3-small` ($0.02/1M; whole ingest <1¢) + `claude-sonnet-4-6` ($3/$15 per 1M).
+    In S6, A/B them for the eval story: embeddings (3-small vs Gemini `gemini-embedding-001`
+    $0.15/1M / vs an open model) and answers (Sonnet vs **Haiku 4.5** $1/$5 — often matches Sonnet
+    on grounded extraction at ⅓ cost vs **Opus 4.8** $5/$25). Measured deltas > picking "best" blind.
+  - **Vector DB: keep Neon pgvector** — best transferable skill, ~$0 (scale-to-zero), enables free
+    in-DB hybrid search. Pinecone (2GB free) is the main alt but a thinner "managed-API" story.
+    **Index note:** at ~200 vectors prefer **exact KNN over HNSW/IVFFlat** (approximate index trades
+    recall for a speedup we don't need) — record this as a deliberate production call in S2.
+  - **S6 retrieval improvements (both behind flags, measure both deltas):** (1) **hybrid search =
+    pgvector + Postgres `tsvector`** — $0, in-DB, strongest free win; (2) a reranker — **Cohere Rerank
+    (free trial key)** or a **Haiku LLM-reranker** (stays in-stack, pennies/run).
+  - **Rate limiting (S7):** Vercel KV is discontinued → use **Upstash Redis (free, via Vercel
+    Marketplace) + `@upstash/ratelimit`** per-IP (caps the only real cost: answer tokens), or a
+    no-code **Vercel WAF rate-limit rule** + **BotID** (free, GA). Cache identical queries to cut cost.
+  - **Cost reality:** truly ~$0 except answer-generation tokens (~$2–8 one-time build, ~$0–5/mo).
+    A local open model for answers would be $0 but kills the hosted demo — not worth it.
+  - **Kept as-is (already the right call):** Neon pgvector, `text-embedding-3-small`,
+    `claude-sonnet-4-6`, AI SDK v6 `useChat` + shadcn for the UI, heading-aware chunking baseline.
 
 ## Open questions / blockers
 - _none yet_
