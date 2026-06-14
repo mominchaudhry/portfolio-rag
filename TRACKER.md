@@ -16,11 +16,11 @@
 | Field | Value |
 |-------|-------|
 | Repo URL | https://github.com/mominchaudhry/portfolio-rag |
-| Live demo URL | _TBD — pending Vercel deploy (see S0 handoff)_ |
-| Vector DB | Neon Postgres + `pgvector` (free tier) — provisioning pending (S0 handoff) |
+| Live demo URL | https://ask-my-portfolio-jjco5b2ux-mominchaudhrys-projects.vercel.app — deploy READY & renders, but **Vercel Deployment Protection (SSO) is ON** → 401 to the public. Flip OFF before sharing (S7). Vercel project `ask-my-portfolio` (`prj_k4hHPUckW5CKXz3SrkxdcqAVEOsJ`), GitHub repo connected for auto-deploy. |
+| Vector DB | Neon Postgres 18.4 + `pgvector` 0.8.1 (free tier) — provisioned: project `super-credit-31396538` (`ask-my-portfolio`, aws-us-east-1). Reachability verified. `DATABASE_URL` in `.env.local`; **still needs adding to Vercel env** (do at S3 with the API keys). |
 | Models | Answers: `claude-sonnet-4-6` (or `claude-opus-4-8`) · Embeddings: OpenAI `text-embedding-3-small` |
 | Headline metric | _TBD — fill from eval scorecard_ |
-| Overall status | **S0 in progress** (scaffold + repo done; Neon + Vercel pending user) |
+| Overall status | **S0 DONE** — next session: S1 (assemble corpus) |
 
 **One-liner:** A cited, streaming chat assistant embedded in the portfolio that
 answers questions about Momin (experience, projects, skills) using RAG over his own
@@ -104,7 +104,7 @@ portfolio-rag/
 
 | Session | Goal | Status |
 |---------|------|--------|
-| S0 | Repo scaffold, decisions, Vercel deploy skeleton | IN PROGRESS |
+| S0 | Repo scaffold, decisions, Vercel deploy skeleton | DONE |
 | S1 | Assemble & version the corpus (markdown) | TODO |
 | S2 | Ingest pipeline: chunk → embed → store in vector DB | TODO |
 | S3 | Retrieval + grounded generation (streaming + citations) | TODO |
@@ -167,7 +167,7 @@ shows Opus materially wins.
 
 ## Sessions
 
-### S0 — Repo scaffold, decisions, deploy skeleton · `IN PROGRESS`
+### S0 — Repo scaffold, decisions, deploy skeleton · `DONE`
 **Goal:** A deployable empty Next.js app + recorded key decisions, so later sessions
 have a home.
 **Prerequisites:** Anthropic + OpenAI API keys (prepaid credits loaded); GitHub +
@@ -200,19 +200,29 @@ Done:      Scaffolded Next.js 16.2.9 + React 19.2.4 app (TS, App Router, Tailwin
 Files:     whole Next scaffold; .env.example; .gitignore (env exception); TRACKER.md
 Decisions: see Decision log below — Neon pgvector / RAGAS / text-embedding-3-small /
            claude-sonnet-4-6 (all per the doc's recommended defaults).
-Verify:    `nvm use 20 && npm install && npm run build` is clean; repo is live on GitHub.
-Gotchas:   AGENTS.md in the repo warns Next 16 has breaking changes vs training data —
-           read node_modules/next/dist/docs/ before writing route/UI code in S3/S4.
-           create-next-app refuses to run if the dir is non-empty, so TRACKER.md was moved
-           aside during scaffold and restored.
-Next:      Two interactive steps remain before S0 is DONE (both need the user's browser login,
-           can't be done headless):
-             1. Neon: create a free project, run `CREATE EXTENSION vector;`, copy the pooled
-                connection string into .env.local as DATABASE_URL (and later into Vercel env).
-             2. Vercel: `npx vercel link` + `npx vercel --prod` (or connect the GitHub repo in
-                the Vercel dashboard for auto-deploy). Add ANTHROPIC_API_KEY / OPENAI_API_KEY /
-                DATABASE_URL to the Vercel project env. Then fill Live demo URL + Vector DB in
-                Project facts and flip S0 → DONE.
+Verify:    `nvm use 20 && npm run build` clean; repo live on GitHub; Vercel deploy READY
+           (renders starter page); DB: node script reading DATABASE_URL → `select version()`
+           returns Postgres 18.4 + pgvector 0.8.1.
+Gotchas:   (a) AGENTS.md warns Next 16 has breaking changes vs training data — read
+           node_modules/next/dist/docs/ before route/UI code in S3/S4. (b) create-next-app
+           refuses a non-empty dir → TRACKER.md was moved aside during scaffold, restored after.
+           (c) Vercel Deployment Protection (SSO) is ON for the team → the prod URL returns 401
+           to the public (loads only when logged in). Not blocking S0; must be turned OFF before
+           the demo is shareable (S7).
+Done (S0 close-out, 2026-06-13): Vercel linked (project ask-my-portfolio,
+           prj_k4hHPUckW5CKXz3SrkxdcqAVEOsJ; GitHub repo connected for auto-deploy) and skeleton
+           deployed to prod (READY). Neon provisioned (project super-credit-31396538, Postgres 18.4,
+           aws-us-east-1 to match Vercel iad1; pgvector 0.8.1; scale-to-zero on, autoscale 0.25–2 CU);
+           DATABASE_URL in .env.local, reachability verified. All four DoD items met → S0 DONE.
+Next:      Carry-over (NOT blocking S0):
+             1. Vector index choice deferred to S2 (tiny corpus: exact scan vs HNSW cosine — pick
+                for the "production" story).
+             2. Add OPENAI_API_KEY (needed S2) + ANTHROPIC_API_KEY (needed S3) to .env.local, and
+                add all three vars (incl. DATABASE_URL) to the Vercel project env before deploying a
+                model-calling build.
+             3. Before sharing the demo (S7): Vercel → Settings → Deployment Protection → turn
+                Vercel Authentication OFF.
+           Next agent starts S1 — assemble & version the corpus.
 ```
 
 ---
