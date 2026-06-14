@@ -20,7 +20,7 @@
 | Vector DB | Neon Postgres 18.4 + `pgvector` 0.8.1 (free tier) — provisioned: project `super-credit-31396538` (`ask-my-portfolio`, aws-us-east-1). Reachability verified. `DATABASE_URL` in `.env.local`; **still needs adding to Vercel env** (do at S3 with the API keys). |
 | Models | Answers: `claude-sonnet-4-6` (or `claude-opus-4-8`) · Embeddings: OpenAI `text-embedding-3-small` |
 | Headline metric | _TBD — fill from eval scorecard_ |
-| Overall status | **S0 DONE** — next session: S1 (assemble corpus) |
+| Overall status | **S1 DONE** — next session: S2 (ingest pipeline) |
 
 **One-liner:** A cited, streaming chat assistant embedded in the portfolio that
 answers questions about Momin (experience, projects, skills) using RAG over his own
@@ -105,7 +105,7 @@ portfolio-rag/
 | Session | Goal | Status |
 |---------|------|--------|
 | S0 | Repo scaffold, decisions, Vercel deploy skeleton | DONE |
-| S1 | Assemble & version the corpus (markdown) | TODO |
+| S1 | Assemble & version the corpus (markdown) | DONE |
 | S2 | Ingest pipeline: chunk → embed → store in vector DB | TODO |
 | S3 | Retrieval + grounded generation (streaming + citations) | TODO |
 | S4 | Chat UI widget | TODO |
@@ -227,7 +227,7 @@ Next:      Carry-over (NOT blocking S0):
 
 ---
 
-### S1 — Assemble & version the corpus · `TODO`
+### S1 — Assemble & version the corpus · `DONE`
 **Goal:** A clean, chunk-ready markdown corpus of Momin's content committed to the repo.
 **Prerequisites:** S0 done.
 **Tasks:**
@@ -243,7 +243,35 @@ Next:      Carry-over (NOT blocking S0):
    evals will check against.
 **Definition of done:** `/content/*.md` committed, covering bio, experience, projects,
 skills, résumé. No secrets. Each file has front-matter usable for citation labels.
-**Handoff notes:** _empty_
+**Handoff notes:**
+```
+Done:      Created /content with 5 markdown files — bio.md, experience.md, projects.md,
+           skills.md, resume.md. Each has YAML front-matter (title, source, section): `source`
+           is a human-readable link target (portfolio section anchors, e.g.
+           https://mominchaudhry.com/#about; resume.md points at the hosted PDF). Content is
+           first-person where natural and chunk-friendly (headings per section). Facts sourced
+           from the portfolio content layer (local.ts) + the hosted résumé PDF.
+Files:     content/bio.md, content/experience.md, content/projects.md, content/skills.md,
+           content/resume.md
+Decisions: (a) Coinbase "Software Engineer (Backend), June 2022 — offer rescinded" entry from
+           the résumé was OMITTED to match the live portfolio (user-confirmed). (b) Phone number
+           (416) 317-6213 from the résumé OMITTED for PII (user-confirmed); kept email/GitHub/
+           LinkedIn/website (already public). (c) School written as "Toronto Metropolitan
+           University (formerly Ryerson University)" — current name, matches portfolio bio.
+           (d) resume.md is the consolidated résumé-style doc; bio/experience/projects/skills are
+           richer first-person expansions (intentional overlap aids retrieval). (e) The in-progress
+           "Ask My Portfolio" RAG project is NOT in the corpus yet — it gets added to the portfolio
+           in S8 and has no eval metrics until S5/S6.
+Verify:    `ls content/` → 5 .md files; each starts with `---` front-matter (title/source/section).
+           `grep -riE 'api[_-]?key|secret|password|postgres://|317-6213|coinbase' content/` → only
+           legit "OpenAI API"/"Anthropic/Claude API" skill keywords, no secrets/PII/Coinbase.
+Gotchas:   Résumé says "Ryerson University" (pre-rename) and lists Coinbase + phone — corpus
+           intentionally diverges from the raw PDF on those three points (see Decisions). If S5
+           builds a refusal/unanswerable eval set, "Did Momin work at Coinbase?" and "What's his
+           phone number?" are natural unanswerable candidates given they're absent from the corpus.
+Next:      S2 — ingest pipeline (chunk → embed → store in Neon pgvector). Add OPENAI_API_KEY to
+           .env.local first (carry-over from S0).
+```
 
 ---
 
