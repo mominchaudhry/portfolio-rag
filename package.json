@@ -6,7 +6,9 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "ingest": "node --env-file=.env.local --import tsx scripts/ingest.ts",
+    "query": "node --env-file=.env.local --import tsx scripts/query.ts"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.84",
@@ -26,6 +28,7 @@
     "eslint": "^9",
     "eslint-config-next": "16.2.9",
     "tailwindcss": "^4",
+    "tsx": "^4.22.4",
     "typescript": "^5"
   }
 }

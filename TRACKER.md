@@ -18,9 +18,10 @@
 | Repo URL | https://github.com/mominchaudhry/portfolio-rag |
 | Live demo URL | https://ask-my-portfolio-jjco5b2ux-mominchaudhrys-projects.vercel.app — deploy READY & renders, but **Vercel Deployment Protection (SSO) is ON** → 401 to the public. Flip OFF before sharing (S7). Vercel project `ask-my-portfolio` (`prj_k4hHPUckW5CKXz3SrkxdcqAVEOsJ`), GitHub repo connected for auto-deploy. |
 | Vector DB | Neon Postgres 18.4 + `pgvector` 0.8.1 (free tier) — provisioned: project `super-credit-31396538` (`ask-my-portfolio`, aws-us-east-1). Reachability verified. `DATABASE_URL` in `.env.local`; **still needs adding to Vercel env** (do at S3 with the API keys). |
-| Models | Answers: `claude-sonnet-4-6` (Haiku 4.5 / Opus 4.8 as S6 ablations) via **Vercel AI Gateway** · Embeddings: OpenAI `text-embedding-3-small` · Eval: **Promptfoo + Claude-as-judge** |
+| Models | Answers: `claude-sonnet-4-6` (Haiku 4.5 / Opus 4.8 as S6 ablations) via **Vercel AI Gateway** · Embeddings: `openai/text-embedding-3-small` **routed through the AI Gateway** (S2 — OpenAI-direct hit a quota wall) · Eval: **Promptfoo + Claude-as-judge** |
+| Credentials | **`AI_GATEWAY_API_KEY`** is now the primary model credential (embeddings + S3 answers); in `.env.local`, **still needs adding to Vercel env** (do at S3 with `DATABASE_URL`). Vercel AI Gateway requires a card on file + the free tier ($5/mo) is rate-limited per model — a small paid top-up will be needed for the S5 eval run (48 Q). Direct `OPENAI_API_KEY`/`ANTHROPIC_API_KEY` are now optional fallback only. |
 | Headline metric | _TBD — fill from eval scorecard_ |
-| Overall status | **S1 DONE** — next session: S2 (ingest pipeline) |
+| Overall status | **S2 DONE** — next session: S3 (retrieval + grounded streaming) |
 
 **One-liner:** A cited, streaming chat assistant embedded in the portfolio that
 answers questions about Momin (experience, projects, skills) using RAG over his own
@@ -108,7 +109,7 @@ portfolio-rag/
 |---------|------|--------|
 | S0 | Repo scaffold, decisions, Vercel deploy skeleton | DONE |
 | S1 | Assemble & version the corpus (markdown) | DONE |
-| S2 | Ingest pipeline: chunk → embed → store in vector DB | TODO |
+| S2 | Ingest pipeline: chunk → embed → store in vector DB | DONE |
 | S3 | Retrieval + grounded generation (streaming + citations) | TODO |
 | S4 | Chat UI widget | TODO |
 | S5 | Eval set (30–60 Q&A) + harness + **baseline numbers** | TODO |
@@ -276,7 +277,7 @@ Next:      S2 — ingest pipeline (chunk → embed → store in Neon pgvector). 
 
 ---
 
-### S2 — Ingest pipeline: chunk → embed → store · `TODO`
+### S2 — Ingest pipeline: chunk → embed → store · `DONE`
 **Goal:** A re-runnable script that loads `/content` into the vector DB.
 **Prerequisites:** S1 done.
 **Tasks:**
@@ -292,7 +293,47 @@ Next:      S2 — ingest pipeline (chunk → embed → store in Neon pgvector). 
 **Definition of done:** `npm run ingest` populates the DB; CLI query returns sensible
 top-k chunks for 3–4 sample questions. Chunking params recorded in Handoff (they're a
 baseline you'll ablate in S6).
-**Handoff notes:** _empty_
+**Handoff notes:**
+```
+Done:      Built the re-runnable ingest pipeline + a CLI retrieval sanity check.
+           `npm run ingest` → chunk content/*.md → embed → (re)create the `documents`
+           table on Neon pgvector → insert. Verified end-to-end: 26 chunks embedded,
+           26 rows in `documents`. `npm run query -- "<q>"` returns top-5 by cosine
+           similarity; 4 sample Qs (AWS / AI skills / university / Clearbridge) all
+           surfaced the correct chunk in top-k.
+Files:     scripts/db.ts (Neon client + gateway embeddings + vector helpers),
+           scripts/chunk.ts (front-matter parse + heading-aware chunking),
+           scripts/ingest.ts, scripts/query.ts; package.json (ingest/query scripts +
+           tsx devDep); .env.example (AI_GATEWAY_API_KEY documented).
+Decisions: (a) BASELINE CHUNKING (ablate in S6): heading-aware — split body on `##`
+           (h2); content before the first h2 = its own leading chunk; oversized
+           sections windowed at MAX_TOKENS≈700 with OVERLAP≈100 tok (paragraph-aligned),
+           tokens approximated as chars/4. Yielded 26 chunks (bio 5, experience 4,
+           projects 5, resume 5, skills 7). Metadata per chunk: sourceFile, title,
+           source(url), section, heading, chunkIndex, charStart/charEnd — drives S3
+           citations. (b) INDEX: deliberate EXACT cosine KNN, NO approximate index
+           (HNSW/IVFFlat) — ~26 vectors; approximate trades recall for a speed-up we
+           don't need (per S1.5). Documented in scripts/ingest.ts header. (c) IDEMPOTENT
+           via DROP+CREATE+reinsert each run — DB always matches current corpus+params.
+           (d) Embeddings switched to `openai/text-embedding-3-small` via the AI Gateway
+           (was OpenAI-direct) — see Decision log S2; same model/dims (1536), zero markup.
+           (e) Runner: `node --env-file=.env.local --import tsx` (Node 20.19 built-in
+           env loader + tsx; no dotenv dep).
+Verify:    `nvm use 20 && npm run ingest` → "✓ Ingest complete — 26 rows in documents."
+           `npm run query -- "Has Momin used AWS at scale?"` → top hit skills.md › Cloud (AWS).
+           Direct DB check: `SELECT count(*) FROM documents;` → 26.
+Gotchas:   (1) OpenAI-direct key is dead (insufficient_quota) — pipeline routes embeddings
+           through Vercel AI Gateway via AI_GATEWAY_API_KEY (in .env.local). (2) AI Gateway
+           FREE tier is rate-limited per model: firing ~6 embeds back-to-back (1 ingest batch
+           + 5 queries) tripped a 429 rate_limit_exceeded on the 6th. Not a failure — but the
+           S5 eval (48 Q) WILL need a small paid top-up or throttling/caching. (3) Retrieval
+           artifact for S6: short intro/title chunks (bio intro, resume title line) rank high
+           on many queries via generic overlap — candidate for S6 chunking/rerank tuning.
+           (4) AI_GATEWAY_API_KEY not yet in Vercel project env — add at S3 with DATABASE_URL.
+Next:      S3 — app/api/ask/route.ts: embed question → top-k similarity → grounded prompt →
+           stream `anthropic/claude-sonnet-4-6` via the gateway with citations + a
+           low-similarity refusal guardrail. Reuse scripts/db.ts patterns (neon + gateway).
+```
 
 ---
 
@@ -470,6 +511,23 @@ full hybrid (BM25 + vector) retrieval · swap to an open embedding model and com
     A local open model for answers would be $0 but kills the hosted demo — not worth it.
   - **Kept as-is (already the right call):** Neon pgvector, `text-embedding-3-small`,
     `claude-sonnet-4-6`, AI SDK v6 `useChat` + shadcn for the UI, heading-aware chunking baseline.
+- **S2 (2026-06-14):**
+  - **Embeddings routed through Vercel AI Gateway** (`openai/text-embedding-3-small` via the
+    `gateway` provider from `ai`) instead of OpenAI-direct (`@ai-sdk/openai`). Forced by reality:
+    the OpenAI key returned `insufficient_quota` (429). The gateway path was already the S1.5
+    plan for answers, so this just unifies embeddings onto the same credential. Same model,
+    1536 dims, zero markup. **`AI_GATEWAY_API_KEY` is now the primary model credential.** Note:
+    the AI SDK `ai-gateway` skill claims "embeddings need a direct SDK" — outdated; the installed
+    `@ai-sdk/gateway` exposes `textEmbeddingModel` and routing worked (proven against the live API).
+  - **Gateway billing learned the hard way:** requires a credit card on file before serving ANY
+    request (even free-tier). Free tier = $5/mo, a model SUBSET, and per-model rate limits → a 429
+    after ~6 rapid embeds. Auto top-up is OFF by default (no surprise charges; balance just runs
+    dry → requests fail). S5's 48-question eval will need a small paid top-up or request throttling.
+  - **Vector index = exact KNN, no ANN.** At ~26 vectors an HNSW/IVFFlat index trades recall for a
+    speed-up we don't need (IVFFlat also wants more rows to train lists). Deliberate production call.
+  - **Chunking baseline (ablate in S6):** heading-aware split on `##`, leading pre-h2 chunk kept,
+    oversized sections windowed ≈700 tok / ≈100 tok overlap (chars/4 token proxy). 26 chunks total.
 
 ## Open questions / blockers
-- _none yet_
+- **AI Gateway free-tier rate limit vs. S5 eval (48 Q):** the eval harness will trip the per-model
+  429 unless we add a small paid top-up (auto top-up stays OFF) or throttle/cache requests. Decide at S5.
