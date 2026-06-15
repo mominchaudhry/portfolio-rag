@@ -21,7 +21,7 @@
 | Models | Answers: **`anthropic/claude-haiku-4.5`** is the current S3 default (Sonnet 4.6 is the *intended* baseline but is **403-blocked on the gateway free tier** — needs a paid top-up; Haiku is free-tier OK, in-family, already an S6 ablation candidate; env-overridable via `ANSWER_MODEL`). Opus 4.8 also an S6 ablation. All via **Vercel AI Gateway** — NB gateway ids are DOTTED (`claude-sonnet-4.6`), not hyphenated. · Embeddings: `openai/text-embedding-3-small` **routed through the AI Gateway** (S2 — OpenAI-direct hit a quota wall) · Eval: **Promptfoo + Claude-as-judge** |
 | Credentials | **`AI_GATEWAY_API_KEY`** is now the primary model credential (embeddings + S3 answers); in `.env.local`, **still needs adding to Vercel env** (do at S3 with `DATABASE_URL`). Vercel AI Gateway requires a card on file + the free tier ($5/mo) is rate-limited per model — a small paid top-up will be needed for the S5 eval run (48 Q). Direct `OPENAI_API_KEY`/`ANTHROPIC_API_KEY` are now optional fallback only. |
 | Headline metric | _TBD — fill from eval scorecard_ |
-| Overall status | **S3 DONE** — next session: S4 (chat UI widget) or S5 (eval set + baseline; S5 only needs S3). **Before S5's 48-Q eval run: add a paid AI Gateway top-up** (unblocks Sonnet baseline + the per-model free-tier rate limit). |
+| Overall status | **S4 DONE** — chat UI widget live in the standalone app (streaming + clickable citations + suggested Qs), verified locally; build/lint clean. Next session: S5 (eval set + baseline; needs only S3). **Before S5's 48-Q eval run: add a paid AI Gateway top-up** (unblocks Sonnet baseline + the per-model free-tier rate limit). |
 
 **One-liner:** A cited, streaming chat assistant embedded in the portfolio that
 answers questions about Momin (experience, projects, skills) using RAG over his own
@@ -111,7 +111,7 @@ portfolio-rag/
 | S1 | Assemble & version the corpus (markdown) | DONE |
 | S2 | Ingest pipeline: chunk → embed → store in vector DB | DONE |
 | S3 | Retrieval + grounded generation (streaming + citations) | DONE |
-| S4 | Chat UI widget | TODO |
+| S4 | Chat UI widget | DONE |
 | S5 | Eval set (30–60 Q&A) + harness + **baseline numbers** | TODO |
 | S6 | Improve retrieval (rerank / better chunking / hybrid) + re-run evals; capture delta | TODO |
 | S7 | Polish, README + architecture diagram + scorecard, deploy | TODO |
@@ -405,7 +405,7 @@ Next:      S4 (chat UI) — wire `useChat<AskUIMessage>` to /api/ask; render tex
 
 ---
 
-### S4 — Chat UI widget · `TODO`
+### S4 — Chat UI widget · `DONE`
 **Goal:** A usable chat interface (foundation for the portfolio embed).
 **Prerequisites:** S3 done.
 **Tasks:**
@@ -419,7 +419,55 @@ Next:      S4 (chat UI) — wire `useChat<AskUIMessage>` to /api/ask; render tex
    change.
 **Definition of done:** Working chat in the standalone app, streaming + clickable
 citations, suggested questions, deployed to Vercel.
-**Handoff notes:** _empty_
+**Handoff notes:**
+```
+Done:      Built the "Ask my portfolio" chat widget and wired it into the app. A floating
+           launcher (bottom-right) toggles a chat panel that talks to POST /api/ask via the
+           AI SDK v6 `useChat` hook over DefaultChatTransport. Streams tokens live; renders
+           the answer with inline [n] markers turned into links to each cited source, plus a
+           "Sources" list under each answer. Empty state shows 4 suggested questions (AWS /
+           Clearbridge / AI skills / projects); has submitted/streaming (typing dots) +
+           Stop + error states; mobile-friendly (full-width panel on small screens, fixed
+           card on sm+). Replaced the create-next-app starter page with a short landing that
+           explains the demo and mounts the widget; set real <title>/description metadata.
+           Verified end-to-end on dev:3000 — page renders + widget mounts; refusal path
+           (no model call, no citations) and answerable path (data-citations part + streamed
+           text with [n] markers) both return the exact stream shape the widget parses.
+           `npm run build` + `npm run lint` clean.
+Files:     app/components/ask-widget.tsx (the widget — self-contained, only an optional
+           `apiUrl` prop for the S8 cross-origin embed), app/page.tsx (landing + mounts
+           widget), app/layout.tsx (metadata title/description), package.json +
+           package-lock.json (added @ai-sdk/react).
+Decisions: (a) Used `@ai-sdk/react`'s `useChat` (NOT a hand-rolled fetch client): the S3
+           route was purpose-built for it (AskUIMessage + the persistent `data-citations`
+           part), so the hook reads message.parts directly. NB in AI SDK v6 `useChat` no
+           longer manages input — input is local useState, send via `sendMessage({text})`,
+           and `status` is 'submitted'|'streaming'|'ready'|'error'. (b) `@ai-sdk/react`
+           wasn't installed (v6 split the React hooks out of `ai`); added @ai-sdk/react@3.0.207
+           to match ai@6.0.205. (c) Citations: inline [n] become superscript links to
+           Citation.source (opens the portfolio section / résumé), plus a Sources footer
+           list per answer — both from the single `data-citations` part. (d) Self-contained in
+           one file w/ no UI-lib deps (inline SVG icons, Tailwind classes) + an `apiUrl` prop
+           so S8 can point it at the standalone service cross-origin with zero refactor.
+           (e) Retrieval re-runs per turn on the latest user message (route already does this),
+           so follow-ups are grounded; convertToModelMessages ignores the UI-only data parts.
+Verify:    `nvm use 20 && npm run build` clean; `npm run lint` clean. `npm run dev`, open
+           http://localhost:3000 → click "Ask my portfolio" → try a suggested question
+           (streams a cited answer; [n] + Sources are clickable) and an unanswerable one
+           ("What is the capital of France?" → clean refusal, no citations). Space model
+           calls ~80s+ apart on the gateway free tier (embed 429 — see S3 gotchas).
+Gotchas:   (1) Free-tier gateway limits still apply (premium answer models 403; embeds/Haiku
+           rate-limited) — unchanged from S3; default answer model is still
+           anthropic/claude-haiku-4.5. (2) DoD says "deployed to Vercel": pushing to main
+           auto-deploys (GitHub connected), BUT Vercel Deployment Protection (SSO) is still ON
+           → the prod URL is 401 to the public until it's flipped OFF in S7. The widget is
+           fully verified locally. (3) AI_GATEWAY_API_KEY + DATABASE_URL must be in the Vercel
+           project env for the deployed widget to actually answer (carry-over from S0/S3 — add
+           before relying on the live demo).
+Next:      S5 — eval set + Promptfoo harness + baseline numbers (needs only S3). BEFORE the
+           48-Q run: add a small paid AI Gateway top-up (unblocks the Sonnet baseline + the
+           per-model free-tier rate limit), then set ANSWER_MODEL=anthropic/claude-sonnet-4.6.
+```
 
 ---
 
