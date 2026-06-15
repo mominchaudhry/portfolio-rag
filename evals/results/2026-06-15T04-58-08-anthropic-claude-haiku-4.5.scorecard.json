@@ -1,0 +1,56 @@
+{
+  "timestamp": "2026-06-15T04:59:40.813Z",
+  "answerModel": "anthropic/claude-haiku-4.5",
+  "judgeModel": "anthropic/claude-sonnet-4.6",
+  "config": "baseline — heading chunking, exact KNN top-5, no rerank, threshold 0.3",
+  "counts": {
+    "answerable": 34,
+    "unanswerable": 14,
+    "total": 48
+  },
+  "metrics": {
+    "correctness": {
+      "passRate": 0.8235294117647058,
+      "meanScore": 0.85,
+      "n": 34
+    },
+    "faithfulness": {
+      "passRate": 0.9705882352941176,
+      "meanScore": 0.9705882352941176,
+      "n": 34
+    },
+    "context_recall": {
+      "passRate": 0.9117647058823529,
+      "meanScore": 0.9117647058823529,
+      "n": 34
+    },
+    "retrieval_hit": {
+      "passRate": 0.9705882352941176,
+      "meanScore": 0.9705882352941176,
+      "n": 34
+    },
+    "answered": {
+      "passRate": 1,
+      "meanScore": 1,
+      "n": 34
+    },
+    "refusal_accuracy": {
+      "passRate": 1,
+      "meanScore": 1,
+      "n": 14
+    }
+  },
+  "hallucinationRate": 0,
+  "overallPassRate": 0.8333333333333334,
+  "cost": {
+    "totalUsd": 0.048643000000000006,
+    "perAnsweredUsd": 0.0014306764705882356
+  },
+  "latencyMs": {
+    "p50": 2108,
+    "p95": 3200,
+    "n": 48
+  },
+  "totalAnswerTokens": 36679,
+  "rawResults": "/Users/momin/ai-projects/ask-my-portfolio/evals/results/2026-06-15T04-58-08-anthropic-claude-haiku-4.5.json"
+}

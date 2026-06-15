@@ -8,7 +8,8 @@
     "start": "next start",
     "lint": "eslint",
     "ingest": "node --env-file=.env.local --import tsx scripts/ingest.ts",
-    "query": "node --env-file=.env.local --import tsx scripts/query.ts"
+    "query": "node --env-file=.env.local --import tsx scripts/query.ts",
+    "eval": "node --env-file=.env.local --import tsx evals/run.ts"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.84",
@@ -28,6 +29,7 @@
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "16.2.9",
+    "promptfoo": "^0.120.19",
     "tailwindcss": "^4",
     "tsx": "^4.22.4",
     "typescript": "^5"

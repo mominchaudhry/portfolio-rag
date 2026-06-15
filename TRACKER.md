@@ -18,10 +18,10 @@
 | Repo URL | https://github.com/mominchaudhry/portfolio-rag |
 | Live demo URL | https://ask-my-portfolio-jjco5b2ux-mominchaudhrys-projects.vercel.app — deploy READY & renders, but **Vercel Deployment Protection (SSO) is ON** → 401 to the public. Flip OFF before sharing (S7). Vercel project `ask-my-portfolio` (`prj_k4hHPUckW5CKXz3SrkxdcqAVEOsJ`), GitHub repo connected for auto-deploy. |
 | Vector DB | Neon Postgres 18.4 + `pgvector` 0.8.1 (free tier) — provisioned: project `super-credit-31396538` (`ask-my-portfolio`, aws-us-east-1). Reachability verified. `DATABASE_URL` in `.env.local`; **still needs adding to Vercel env** (do at S3 with the API keys). |
-| Models | Answers: **`anthropic/claude-haiku-4.5`** is the current S3 default (Sonnet 4.6 is the *intended* baseline but is **403-blocked on the gateway free tier** — needs a paid top-up; Haiku is free-tier OK, in-family, already an S6 ablation candidate; env-overridable via `ANSWER_MODEL`). Opus 4.8 also an S6 ablation. All via **Vercel AI Gateway** — NB gateway ids are DOTTED (`claude-sonnet-4.6`), not hyphenated. · Embeddings: `openai/text-embedding-3-small` **routed through the AI Gateway** (S2 — OpenAI-direct hit a quota wall) · Eval: **Promptfoo + Claude-as-judge** |
-| Credentials | **`AI_GATEWAY_API_KEY`** is now the primary model credential (embeddings + S3 answers); in `.env.local`, **still needs adding to Vercel env** (do at S3 with `DATABASE_URL`). Vercel AI Gateway requires a card on file + the free tier ($5/mo) is rate-limited per model — a small paid top-up will be needed for the S5 eval run (48 Q). Direct `OPENAI_API_KEY`/`ANTHROPIC_API_KEY` are now optional fallback only. |
-| Headline metric | _TBD — fill from eval scorecard_ |
-| Overall status | **S4 DONE** — chat UI widget live in the standalone app (streaming + clickable citations + suggested Qs), verified locally; build/lint clean. Next session: S5 (eval set + baseline; needs only S3). **Before S5's 48-Q eval run: add a paid AI Gateway top-up** (unblocks Sonnet baseline + the per-model free-tier rate limit). |
+| Models | Answers: **S5 baseline ran on `anthropic/claude-sonnet-4.6`** (the intended baseline — UNBLOCKED by the $10 gateway top-up this session). `anthropic/claude-haiku-4.5` captured as the companion ablation (env-overridable via `ANSWER_MODEL`; still the runtime default in `lib/rag.ts` so the public widget keeps per-query cost low). Opus 4.8 is the remaining S6 ablation. All via **Vercel AI Gateway** — NB gateway ids are DOTTED (`claude-sonnet-4.6`), not hyphenated. · Embeddings: `openai/text-embedding-3-small` **routed through the AI Gateway** (S2 — OpenAI-direct hit a quota wall) · Eval: **Promptfoo + Claude-as-judge** (judge fixed to `claude-sonnet-4.6`) |
+| Credentials | **`AI_GATEWAY_API_KEY`** is the primary model credential (embeddings + answers + eval judge); in `.env.local`, **still needs adding to Vercel env** for the live demo (carry-over). **Gateway now has PAID credit — user topped up $10 (the $10 minimum) this session** → premium models unblocked + per-model rate limit lifted; a full 48-Q eval run ≈ $0.15 answers + judge, so ~$10 covers many S6 runs. Auto top-up stays OFF (credit just runs dry if exhausted). Direct `OPENAI_API_KEY`/`ANTHROPIC_API_KEY` are optional fallback only. |
+| Headline metric | **S5 baseline (Sonnet 4.6):** answer correctness **91.2%**, faithfulness/groundedness **97.1%**, **0% hallucination** + **100% refusal accuracy** on the unanswerable set; ~$0.003/Q, p95 5.8s. Config: heading chunking · exact KNN top-5 · no rerank. _S6 will report the before→after delta._ Full scorecard: `evals/README.md`. |
+| Overall status | **S5 DONE** — versioned 48-Q eval set + one-command Promptfoo + Claude-as-judge harness (`npm run eval`); baseline recorded on Sonnet 4.6 (canonical) **and** Haiku 4.5 (companion ablation), committed under `evals/results/`. Build/lint clean. Next: S6 (improve retrieval — hybrid + rerank — and record the delta vs this baseline). |
 
 **One-liner:** A cited, streaming chat assistant embedded in the portfolio that
 answers questions about Momin (experience, projects, skills) using RAG over his own
@@ -112,7 +112,7 @@ portfolio-rag/
 | S2 | Ingest pipeline: chunk → embed → store in vector DB | DONE |
 | S3 | Retrieval + grounded generation (streaming + citations) | DONE |
 | S4 | Chat UI widget | DONE |
-| S5 | Eval set (30–60 Q&A) + harness + **baseline numbers** | TODO |
+| S5 | Eval set (30–60 Q&A) + harness + **baseline numbers** | DONE |
 | S6 | Improve retrieval (rerank / better chunking / hybrid) + re-run evals; capture delta | TODO |
 | S7 | Polish, README + architecture diagram + scorecard, deploy | TODO |
 | S8 | Embed widget into the portfolio + add to `local.ts` | TODO |
@@ -471,7 +471,7 @@ Next:      S5 — eval set + Promptfoo harness + baseline numbers (needs only S3
 
 ---
 
-### S5 — Eval set + harness + baseline · `TODO` (the part that makes it stand out)
+### S5 — Eval set + harness + baseline · `DONE` (the part that makes it stand out)
 **Goal:** A versioned eval set and a one-command harness that prints a scorecard —
 with the **baseline** numbers recorded.
 **Prerequisites:** S3 done (S4 not required).
@@ -490,7 +490,67 @@ with the **baseline** numbers recorded.
    the "before" for S6's before/after story.
 **Definition of done:** `npm run eval` runs end-to-end and prints a scorecard; baseline
 numbers committed and recorded in Handoff. Eval set covers answerable + unanswerable.
-**Handoff notes:** _empty_
+**Handoff notes:**
+```
+Done:      Built the versioned eval set + a one-command Promptfoo harness + recorded the
+           baseline on TWO answer models. `evals/portfolio_qa.jsonl` = 48 Q (34 answerable
+           w/ reference answer + expected source file; 14 deliberately UNANSWERABLE — GPA,
+           phone, Coinbase, French, certs, off-topic, etc.). `npm run eval` runs each Q
+           through the REAL pipeline (provider.ts imports lib/rag: embed → pgvector top-k →
+           grounded prompt → generate, incl. the hard refusal guardrail), scores it with
+           Claude-as-judge, writes evals/results/<ts>-<model>.json + .scorecard.json, and
+           prints a scorecard. Ran the full 48-Q eval on claude-sonnet-4.6 (canonical
+           baseline) AND claude-haiku-4.5 (companion ablation); judge fixed to sonnet-4.6.
+
+           BASELINE (Sonnet 4.6 · heading chunking · exact KNN top-5 · no rerank · thr 0.3):
+             Answer correctness    91.2%   |  Faithfulness/groundedness  97.1%
+             Context recall        91.2%   |  Retrieval hit (exp source) 97.1%
+             Answered (no false-refuse) 100%  |  Refusal accuracy        100%
+             Hallucination rate    0%      |  Overall pass rate          89.6%
+             Cost $0.0031/Q (total $0.147) |  Latency p50 2949 / p95 5841 ms
+           Companion (Haiku 4.5): correctness 82.4%, all else equal, $0.0010/Q, p95 3200ms.
+           Full table + reading + failure analysis in evals/README.md.
+Files:     evals/portfolio_qa.jsonl, evals/promptfooconfig.yaml, evals/provider.ts,
+           evals/tests.ts, evals/asserts.ts, evals/run.ts, evals/README.md,
+           evals/results/*.json (2 raw + 2 scorecards); package.json (`npm run eval`);
+           lib/rag.ts (extracted REFUSAL_TEXT + buildSystemPrompt so route + eval share one
+           prompt); app/api/ask/route.ts (imports them — no behaviour change).
+Decisions: (a) BASELINE MODEL = claude-sonnet-4.6 (the intended baseline) — user topped up
+           $10 of AI Gateway credit this session, unblocking it (the free-tier 403 is gone).
+           Captured Haiku 4.5 alongside as the cheap S6 model ablation (one ANSWER_MODEL env
+           swap) — gives a real cost/quality comparison now. Judge fixed to sonnet-4.6 across
+           both for a fair comparison. (b) CUSTOM Claude-judge for faithfulness + context-recall
+           (evals/asserts.ts) instead of promptfoo's built-in context-faithfulness/-recall:
+           the built-ins decompose answers into claims and mis-scored short factual answers
+           (graded "Momin is based in Toronto, Canada" as 0% faithful). Custom judges see
+           metadata.context directly + ignore [n] markers → reliable. Correctness + refusal use
+           promptfoo's native llm-rubric (worked fine). (c) Retrieved context reaches the judges
+           via `contextTransform: context.metadata.context` (the provider returns the chunk text
+           in metadata). (d) run.ts maps componentResults to metric names BY POSITION per type —
+           promptfoo drops the `metric` field on `javascript` assertions in its JSON output.
+           (e) Self-preference caveat: Sonnet judging Sonnet may slightly inflate that row;
+           Haiku is judged by Sonnet (no self-bias) and the gap is consistent with correctness.
+Verify:    `nvm use 20`; `ANSWER_MODEL=anthropic/claude-sonnet-4.6 npm run eval` → prints the
+           scorecard above (±1–2 pts judge variance) and writes evals/results/. Quick check:
+           `npm run eval -- --filter-pattern 'unans-' ` → refusal set, expect ~100% refusal /
+           0% hallucination. `npm run build` + `npm run lint` clean.
+Gotchas:   (1) The spawned promptfoo child needs the tsx loader — run.ts sets NODE_OPTIONS=
+           '--import tsx' on it (the parent's --import tsx doesn't carry into the child). (2) The
+           48-Q eval makes ~150 gateway calls; needs PAID credit (free tier 403s premium models
+           + rate-limits) — the $10 top-up covers it (a full run ≈ $0.15 answers + judge). Auto
+           top-up is OFF; credit just runs dry if exhausted. (3) Baseline failures are almost all
+           RETRIEVAL-bound: short heading/intro chunks out-rank detail chunks (the S2 artifact),
+           e.g. "What companies has Momin worked at?" pulls the bare "Work Experience" header.
+           This is the precise thing S6 (hybrid search + rerank) should fix — clean before/after.
+           (4) retrieval_hit slightly understates because corpus content is duplicated across
+           files (DB skills live in both skills.md and resume.md) — deterministic exact-source
+           match, fine as a proxy. (5) Promptfoo 0.120.19 prints a "newer version" banner — cosmetic.
+Next:      S6 — improve retrieval (hybrid pgvector + tsvector first, then a reranker) behind a
+           flag; re-run `npm run eval` and record the delta vs this baseline (correctness +
+           context-recall + retrieval-hit are the rows to move). Also: tune the 0.3 refusal
+           threshold against the unanswerable set, and run the Sonnet-vs-Haiku-vs-Opus answer-
+           model ablation (Opus via one ANSWER_MODEL swap, now that credit exists).
+```
 
 ---
 
@@ -635,12 +695,29 @@ full hybrid (BM25 + vector) retrieval · swap to an open embedding model and com
     a soft in-prompt instruction. Threshold is a baseline tuned against the unanswerable set in S6.
   - **Build fix (carry-over gap):** added `allowImportingTsExtensions:true` to tsconfig so
     `next build`'s typecheck accepts S2's `.ts`-extension script imports (S2 never ran `npm run build`).
+- **S5 (2026-06-14):**
+  - **Baseline answer model = `claude-sonnet-4.6`** (the intended baseline). The free-tier 403 block
+    was removed by the user's **$10 AI Gateway top-up** this session; **`claude-haiku-4.5` captured
+    alongside** as the S6 model ablation (one `ANSWER_MODEL` env swap) for an immediate cost/quality
+    comparison. **Judge fixed to `claude-sonnet-4.6`** across both runs (apples-to-apples; note the
+    Sonnet-judges-Sonnet self-preference caveat — Haiku is judged by Sonnet with no self-bias).
+  - **Eval = Promptfoo, but faithfulness + context-recall use a CUSTOM Claude judge** (`evals/asserts.ts`),
+    not promptfoo's built-in `context-faithfulness`/`context-recall`: the built-ins decompose answers
+    into claims and mis-scored short factual answers (graded "Momin is based in Toronto, Canada" as 0%
+    faithful). Custom judges see the retrieved context (`metadata.context`) directly and ignore `[n]`
+    markers. Correctness + refusal-accuracy use promptfoo's native `llm-rubric` (reliable). Retrieval-hit
+    + answered are deterministic (read provider metadata). Context reaches the judges via
+    `contextTransform: context.metadata.context`.
+  - **Eval ≠ route drift avoided:** extracted `REFUSAL_TEXT` + `buildSystemPrompt` into `lib/rag.ts` so
+    the eval provider and the production route share one grounded prompt + refusal string.
+  - **Baseline recorded** (Sonnet 4.6): correctness 91.2% · faithfulness 97.1% · context-recall 91.2% ·
+    retrieval-hit 97.1% · refusal-accuracy 100% · hallucination 0% · overall 89.6% · ~$0.003/Q · p95 5.8s.
+    Failures are retrieval-bound (short header chunks out-rank detail) → the explicit S6 target.
 
 ## Open questions / blockers
-- **AI Gateway free tier is now blocking on TWO fronts (confirmed live in S3):** (1) premium
-  answer models (`claude-sonnet-4.6`, gpt-5-mini, gemini-2.5-flash) return **403 RestrictedModelsError**
-  — S3 falls back to free-tier `claude-haiku-4.5`; (2) even allowed models (embeds, Haiku) are
-  **rate-limited to a small burst/min → 429** (retryable). Manual use is fine with spacing + the new
-  retry/backoff, but **S5's 48-Q eval needs a paid top-up** (auto top-up stays OFF) or heavy
-  throttle/cache. **Action before S5:** add a small paid gateway top-up, then set
-  `ANSWER_MODEL=anthropic/claude-sonnet-4.6` to record the intended Sonnet baseline.
+- **RESOLVED (S5): AI Gateway free-tier block is gone** — the user topped up **$10** (the minimum),
+  so premium models (incl. `claude-sonnet-4.6`) are unblocked and the per-model rate limit is lifted.
+  The S5 baseline ran on Sonnet 4.6 as intended. Remaining cost note: auto top-up is OFF, so credit
+  just runs dry if exhausted; a full 48-Q eval run is ≈ $0.15 (answers) + judge tokens — budget for
+  ~dozens of S6 runs. **Still open (deploy, not eval):** `AI_GATEWAY_API_KEY` + `DATABASE_URL` are not
+  yet in the Vercel project env, so the live demo can't answer until added (carry-over for S7).

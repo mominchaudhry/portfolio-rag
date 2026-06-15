@@ -1,0 +1,34 @@
+# Ask My Portfolio — RAG eval harness (S5 baseline).
+#
+# `npm run eval` wraps this (see evals/run.ts): it picks the answer model from the
+# ANSWER_MODEL env var, runs promptfoo, then writes a timestamped scorecard to
+# evals/results/. Run it once per answer model for the ablation.
+#
+# Pattern: RAG with a refusal guardrail, gated by a versioned eval suite scored by
+# Claude-as-judge (correctness, faithfulness, context-recall, refusal-accuracy).
+description: "Ask My Portfolio — RAG eval (baseline: heading chunking, exact KNN, no rerank)"
+
+# The answer model is read from ANSWER_MODEL inside the provider (defaults to
+# anthropic/claude-haiku-4.5). The provider runs the REAL pipeline: embed → pgvector
+# top-k → grounded prompt → generate, with the hard similarity refusal guardrail.
+providers:
+  - id: file://provider.ts
+    label: rag-pipeline
+
+# The provider does retrieval itself, so the "prompt" is just the raw question.
+prompts:
+  - "{{question}}"
+
+# Claude-as-judge for every model-graded assertion. Routed through the Vercel AI
+# Gateway's OpenAI-compatible endpoint so it reuses the AI_GATEWAY_API_KEY credential.
+# Fixed to Sonnet 4.6 across all answer-model runs so the comparison is apples-to-apples.
+defaultTest:
+  options:
+    provider:
+      id: openai:chat:anthropic/claude-sonnet-4.6
+      config:
+        apiBaseUrl: https://ai-gateway.vercel.sh/v1
+        apiKeyEnvar: AI_GATEWAY_API_KEY
+
+# Test cases + per-type assertions are generated from the versioned Q&A set.
+tests: file://tests.ts
