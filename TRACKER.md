@@ -18,10 +18,10 @@
 | Repo URL | https://github.com/mominchaudhry/portfolio-rag |
 | Live demo URL | https://ask-my-portfolio-jjco5b2ux-mominchaudhrys-projects.vercel.app — deploy READY & renders, but **Vercel Deployment Protection (SSO) is ON** → 401 to the public. Flip OFF before sharing (S7). Vercel project `ask-my-portfolio` (`prj_k4hHPUckW5CKXz3SrkxdcqAVEOsJ`), GitHub repo connected for auto-deploy. |
 | Vector DB | Neon Postgres 18.4 + `pgvector` 0.8.1 (free tier) — provisioned: project `super-credit-31396538` (`ask-my-portfolio`, aws-us-east-1). Reachability verified. `DATABASE_URL` in `.env.local`; **still needs adding to Vercel env** (do at S3 with the API keys). |
-| Models | Answers: `claude-sonnet-4-6` (Haiku 4.5 / Opus 4.8 as S6 ablations) via **Vercel AI Gateway** · Embeddings: `openai/text-embedding-3-small` **routed through the AI Gateway** (S2 — OpenAI-direct hit a quota wall) · Eval: **Promptfoo + Claude-as-judge** |
+| Models | Answers: **`anthropic/claude-haiku-4.5`** is the current S3 default (Sonnet 4.6 is the *intended* baseline but is **403-blocked on the gateway free tier** — needs a paid top-up; Haiku is free-tier OK, in-family, already an S6 ablation candidate; env-overridable via `ANSWER_MODEL`). Opus 4.8 also an S6 ablation. All via **Vercel AI Gateway** — NB gateway ids are DOTTED (`claude-sonnet-4.6`), not hyphenated. · Embeddings: `openai/text-embedding-3-small` **routed through the AI Gateway** (S2 — OpenAI-direct hit a quota wall) · Eval: **Promptfoo + Claude-as-judge** |
 | Credentials | **`AI_GATEWAY_API_KEY`** is now the primary model credential (embeddings + S3 answers); in `.env.local`, **still needs adding to Vercel env** (do at S3 with `DATABASE_URL`). Vercel AI Gateway requires a card on file + the free tier ($5/mo) is rate-limited per model — a small paid top-up will be needed for the S5 eval run (48 Q). Direct `OPENAI_API_KEY`/`ANTHROPIC_API_KEY` are now optional fallback only. |
 | Headline metric | _TBD — fill from eval scorecard_ |
-| Overall status | **S2 DONE** — next session: S3 (retrieval + grounded streaming) |
+| Overall status | **S3 DONE** — next session: S4 (chat UI widget) or S5 (eval set + baseline; S5 only needs S3). **Before S5's 48-Q eval run: add a paid AI Gateway top-up** (unblocks Sonnet baseline + the per-model free-tier rate limit). |
 
 **One-liner:** A cited, streaming chat assistant embedded in the portfolio that
 answers questions about Momin (experience, projects, skills) using RAG over his own
@@ -110,7 +110,7 @@ portfolio-rag/
 | S0 | Repo scaffold, decisions, Vercel deploy skeleton | DONE |
 | S1 | Assemble & version the corpus (markdown) | DONE |
 | S2 | Ingest pipeline: chunk → embed → store in vector DB | DONE |
-| S3 | Retrieval + grounded generation (streaming + citations) | TODO |
+| S3 | Retrieval + grounded generation (streaming + citations) | DONE |
 | S4 | Chat UI widget | TODO |
 | S5 | Eval set (30–60 Q&A) + harness + **baseline numbers** | TODO |
 | S6 | Improve retrieval (rerank / better chunking / hybrid) + re-run evals; capture delta | TODO |
@@ -337,7 +337,7 @@ Next:      S3 — app/api/ask/route.ts: embed question → top-k similarity → 
 
 ---
 
-### S3 — Retrieval + grounded generation (streaming + citations) · `TODO`
+### S3 — Retrieval + grounded generation (streaming + citations) · `DONE`
 **Goal:** An API route that answers a question with a streamed, cited Claude response.
 **Prerequisites:** S2 done.
 **Tasks:**
@@ -355,7 +355,53 @@ Next:      S3 — app/api/ask/route.ts: embed question → top-k similarity → 
 5. Test via `curl`/a scratch page with answerable + unanswerable questions.
 **Definition of done:** POST a question → streamed grounded answer with citation
 metadata; low-confidence questions refuse cleanly. Manually verified on ~5 questions.
-**Handoff notes:** _empty_
+**Handoff notes:**
+```
+Done:      Built app/api/ask/route.ts — POST a question → embed → top-k pgvector KNN →
+           grounded prompt → STREAM the answer via the AI Gateway, emitting the retrieved
+           chunks as a `data-citations` UIMessage data part. Two-layer refusal guardrail:
+           (1) hard — if best cosine sim < SIMILARITY_THRESHOLD (0.3) we refuse WITHOUT
+           calling the model (no hallucination); (2) soft — the system prompt tells the
+           model to refuse when context lacks the answer. Verified live on dev:3001:
+           • "languages & cloud" → grounded answer w/ inline [3][4] + 5 citations (sim .45–.56)
+           • "capital of France / GPA" → hard refusal, NO model call, NO citations ✓
+           • Clearbridge Q via useChat-shaped {messages:[...]} body → grounded + cited ✓
+           Citations are 1-indexed (`n`) to match the [1]/[2] inline markers.
+Files:     app/api/ask/route.ts (route), lib/rag.ts (retrieve + embed + model consts +
+           429 retry/backoff), lib/types.ts (Citation + AskUIMessage for S4 useChat),
+           .env.example (ANSWER_MODEL override doc), tsconfig.json (build fix — see Gotchas).
+Decisions: (a) ANSWER MODEL = `anthropic/claude-haiku-4.5` by default, NOT the tracker's
+           Sonnet 4.6 baseline. Forced by reality: the AI Gateway FREE tier 403-blocks
+           premium models (RestrictedModelsError) — Sonnet needs a paid top-up. Haiku 4.5 is
+           free-tier OK, in-family (latest Claude), and already an S6 ablation candidate.
+           One-line swap via `ANSWER_MODEL` env (set it to `anthropic/claude-sonnet-4.6` after
+           topping up). The S5 baseline-model + top-up call is the user's (tracker already
+           expected the top-up at S5). (b) GATEWAY MODEL IDS ARE DOTTED — `claude-sonnet-4.6`,
+           NOT the hyphenated Anthropic-direct `claude-sonnet-4-6` the tracker/.env cited
+           (verified vs the live gateway model list); fixed in docs. (c) Body accepts BOTH
+           `{question}` (curl) and `{messages:[...]}` (S4 useChat) — retrieval uses the latest
+           user text. (d) Citations streamed as a persistent `data-citations` part (not metadata)
+           so S4 can render them from message.parts. (e) Added withRetry (1s/2s backoff on
+           retryable 429s) around embeds to smooth the free-tier rate limit.
+Verify:    `nvm use 20 && npm run build` clean; `npm run lint` clean. Then `npm run dev` and:
+           curl -s -N -X POST localhost:3000/api/ask -H 'content-type: application/json' \
+             -d '{"question":"What cloud services does Momin know?"}'
+           → SSE: a `data-citations` part then `text-delta` tokens with inline [n] markers.
+           Unanswerable (`"What is Momin'\''s GPA?"`) → the fixed refusal string, no citations.
+           IMPORTANT: space requests ~80s+ apart on the free tier or you trip the embed 429.
+Gotchas:   (1) BUILD WAS BROKEN coming into S3 — S2's scripts/*.ts use `.ts`-extension imports
+           (fine under tsx) but `next build`'s typecheck rejected them (S2 only verified ingest/
+           query, never `npm run build`). Fixed by adding `allowImportingTsExtensions:true` to
+           tsconfig (valid w/ noEmit). Build now passes. (2) FREE-TIER GATEWAY is the recurring
+           blocker: premium answer models 403; embeds + Haiku rate-limited to a small burst/min
+           (429, retryable) — fine for manual use, but S5's 48-Q eval needs a paid top-up or
+           heavy throttling/caching. (3) Neon returns the int `id` as a string in the citation
+           JSON — harmless (it's just an identifier) but note if S4 does numeric compares.
+Next:      S4 (chat UI) — wire `useChat<AskUIMessage>` to /api/ask; render text parts + the
+           `data-citations` part as links (use Citation.source as href, [n] as the marker).
+           OR S5 (eval+baseline; needs only S3) — but add the paid gateway top-up first, and
+           record the baseline under whichever answer model the eval actually runs on.
+```
 
 ---
 
@@ -527,7 +573,26 @@ full hybrid (BM25 + vector) retrieval · swap to an open embedding model and com
     speed-up we don't need (IVFFlat also wants more rows to train lists). Deliberate production call.
   - **Chunking baseline (ablate in S6):** heading-aware split on `##`, leading pre-h2 chunk kept,
     oversized sections windowed ≈700 tok / ≈100 tok overlap (chars/4 token proxy). 26 chunks total.
+- **S3 (2026-06-14):**
+  - **Answer model default = `anthropic/claude-haiku-4.5`** (env-overridable via `ANSWER_MODEL`),
+    NOT the intended Sonnet 4.6 baseline. Forced: gateway free tier 403-blocks premium models. Haiku
+    4.5 is free-tier OK, in-family, already an S6 ablation candidate → S3 is verifiable now; flip to
+    Sonnet via env once topped up (do at S5 with the baseline).
+  - **Gateway model ids are DOTTED** (`anthropic/claude-sonnet-4.6`), not the hyphenated Anthropic
+    -direct id — verified vs the live gateway model list; corrected the tracker/.env references.
+  - **Citations transport = a persistent `data-citations` UIMessage part** (via `createUIMessageStream`
+    + `writer.merge(streamText(...).toUIMessageStream())`), 1-indexed to match the `[n]` inline
+    markers — chosen over message-metadata so S4 can render them straight from `message.parts`.
+  - **Refusal = two layers:** hard pre-model threshold (best cosine < 0.3 ⇒ refuse, no model call) +
+    a soft in-prompt instruction. Threshold is a baseline tuned against the unanswerable set in S6.
+  - **Build fix (carry-over gap):** added `allowImportingTsExtensions:true` to tsconfig so
+    `next build`'s typecheck accepts S2's `.ts`-extension script imports (S2 never ran `npm run build`).
 
 ## Open questions / blockers
-- **AI Gateway free-tier rate limit vs. S5 eval (48 Q):** the eval harness will trip the per-model
-  429 unless we add a small paid top-up (auto top-up stays OFF) or throttle/cache requests. Decide at S5.
+- **AI Gateway free tier is now blocking on TWO fronts (confirmed live in S3):** (1) premium
+  answer models (`claude-sonnet-4.6`, gpt-5-mini, gemini-2.5-flash) return **403 RestrictedModelsError**
+  — S3 falls back to free-tier `claude-haiku-4.5`; (2) even allowed models (embeds, Haiku) are
+  **rate-limited to a small burst/min → 429** (retryable). Manual use is fine with spacing + the new
+  retry/backoff, but **S5's 48-Q eval needs a paid top-up** (auto top-up stays OFF) or heavy
+  throttle/cache. **Action before S5:** add a small paid gateway top-up, then set
+  `ANSWER_MODEL=anthropic/claude-sonnet-4.6` to record the intended Sonnet baseline.
