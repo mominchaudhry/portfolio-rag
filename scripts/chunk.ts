@@ -1,10 +1,20 @@
 /**
  * Heading-aware markdown chunking for the corpus.
  *
- * Strategy (baseline — ablated in S6):
- *  - Parse YAML-ish front-matter (title/source/section) for citation metadata.
- *  - Split the body on `##` (h2) headings so each chunk is a coherent section.
- *  - If a section exceeds MAX_TOKENS, split it further into overlapping windows.
+ * Two strategies, selected by the CHUNK_STRATEGY env var so S6 can A/B them with a
+ * clean re-ingest (both stay reproducible):
+ *
+ *  - "baseline" (S2): parse front-matter, split the body on `##` (h2) headings, window
+ *    oversized sections. Keeps a leading pre-h2 chunk even when it is header-only —
+ *    which is the S5 failure mode (the bare "Work Experience" header chunk out-ranked
+ *    the company details).
+ *  - "v2" (S6, default): same heading-aware split, plus two fixes aimed squarely at the
+ *    S5 retrieval failures —
+ *      (1) DROP header-only chunks (a section whose body is just its heading / a stub),
+ *          so "# Work Experience" can no longer out-rank real detail chunks;
+ *      (2) PREFIX each chunk with its heading path ("<section> › <heading>") so the
+ *          embedding (and the keyword index) carry the section + document subject, and
+ *          detail chunks surface for category queries ("what companies…", "databases…").
  *
  * Token counts are approximated as chars/4 — good enough to bound chunk size for
  * a corpus this small; we never need exact tokenization here.
@@ -15,6 +25,16 @@ import { join } from "node:path";
 export const MAX_TOKENS = 700; // target ceiling per chunk
 export const OVERLAP_TOKENS = 100; // ~15% overlap when a section must be split
 const CHARS_PER_TOKEN = 4;
+
+/** Chunking strategy — "v2" (S6 default) or "baseline" (reproduces the S5 baseline). */
+export const CHUNK_STRATEGY = process.env.CHUNK_STRATEGY ?? "v2";
+
+/**
+ * v2 only: a section whose body (heading stripped, whitespace removed) is shorter than
+ * this is treated as header-only and dropped — it carries no answerable facts and only
+ * pollutes retrieval (the S5 "Work Experience" header chunk).
+ */
+const MIN_BODY_CHARS = 40;
 
 export interface Chunk {
   content: string;
@@ -110,6 +130,23 @@ function windowSection(text: string): string[] {
   return windows;
 }
 
+/** Strip a single leading markdown heading line (e.g. `## Foo`) from a section's text. */
+function stripLeadingHeading(text: string): string {
+  return text.replace(/^#{1,6}\s+.*(?:\r?\n|$)/, "").replace(/^\s+/, "");
+}
+
+/** Non-whitespace length of a section's body (heading line removed). */
+function bodyLength(sectionText: string): number {
+  return stripLeadingHeading(sectionText).replace(/\s+/g, "").length;
+}
+
+/** "<section> › <heading>" prefix that gives each chunk its document + section subject. */
+function headingPath(fm: FrontMatter, heading: string): string {
+  const top = fm.section || fm.title;
+  if (!heading || heading === fm.title) return top;
+  return `${top} › ${heading}`;
+}
+
 /** Chunk a single markdown file into embed-ready chunks with citation metadata. */
 export function chunkFile(filePath: string, fileName: string): Chunk[] {
   const raw = readFileSync(filePath, "utf8");
@@ -117,15 +154,25 @@ export function chunkFile(filePath: string, fileName: string): Chunk[] {
   const sections = splitSections(body);
   const chunks: Chunk[] = [];
   let chunkIndex = 0;
+  const v2 = CHUNK_STRATEGY !== "baseline";
 
   for (const section of sections) {
-    const windows = windowSection(section.text);
-    for (const win of windows) {
-      // Locate the window within the file body for an honest char range.
-      const localStart = body.indexOf(win, section.offset >= 0 ? 0 : 0);
+    // v2: drop header-only / stub sections so they can't out-rank real content.
+    if (v2 && bodyLength(section.text) < MIN_BODY_CHARS) continue;
+
+    // v2 windows the heading-stripped body and re-adds a clean heading-path prefix;
+    // baseline windows the raw section text (heading line included) unchanged.
+    const sourceText = v2 ? stripLeadingHeading(section.text) : section.text;
+    const prefix = v2 ? `${headingPath(fm, section.heading)}\n\n` : "";
+
+    for (const win of windowSection(sourceText)) {
+      const content = `${prefix}${win}`;
+      // Locate the window's body within the file for an honest-ish char range; the
+      // prefix isn't in the source file, so fall back to the section offset for v2.
+      const localStart = body.indexOf(win);
       const charStart = bodyOffset + (localStart >= 0 ? localStart : section.offset);
       chunks.push({
-        content: win,
+        content,
         metadata: {
           sourceFile: fileName,
           title: fm.title,

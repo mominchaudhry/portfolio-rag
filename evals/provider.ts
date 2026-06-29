@@ -98,7 +98,8 @@ class RagProvider {
     const started = Date.now();
     try {
       const chunks = await retrieve(question);
-      const topSimilarity = chunks[0]?.similarity ?? 0;
+      // Best cosine similarity among retrieved chunks (hybrid RRF can reorder them).
+      const topSimilarity = chunks.reduce((m, c) => Math.max(m, c.similarity), 0);
       const grounded = topSimilarity >= SIMILARITY_THRESHOLD;
       const contextText = chunks
         .map((c, i) => `[${i + 1}] (${c.metadata.sourceFile}) ${c.content}`)

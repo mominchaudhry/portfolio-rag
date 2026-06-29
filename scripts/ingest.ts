@@ -12,12 +12,12 @@
  */
 import { join } from "node:path";
 import { sql, embedTexts, toVectorLiteral, EMBEDDING_DIM, EMBEDDING_MODEL } from "./db.ts";
-import { chunkCorpus, MAX_TOKENS, OVERLAP_TOKENS } from "./chunk.ts";
+import { chunkCorpus, MAX_TOKENS, OVERLAP_TOKENS, CHUNK_STRATEGY } from "./chunk.ts";
 
 const CONTENT_DIR = join(process.cwd(), "content");
 
 async function main() {
-  console.log(`▸ Chunking corpus in ${CONTENT_DIR} (max≈${MAX_TOKENS} tok, overlap≈${OVERLAP_TOKENS} tok, heading-aware)…`);
+  console.log(`▸ Chunking corpus in ${CONTENT_DIR} (strategy=${CHUNK_STRATEGY}, max≈${MAX_TOKENS} tok, overlap≈${OVERLAP_TOKENS} tok, heading-aware)…`);
   const chunks = chunkCorpus(CONTENT_DIR);
   if (chunks.length === 0) {
     throw new Error("No chunks produced — is content/ empty?");
@@ -46,9 +46,14 @@ async function main() {
       content   text  NOT NULL,
       metadata  jsonb NOT NULL,
       embedding vector(${sql.unsafe(String(EMBEDDING_DIM))}) NOT NULL,
+      -- Full-text vector for S6 hybrid (vector + keyword) retrieval, fused via RRF in
+      -- lib/rag. Generated from content so it always tracks the chunk text; the GIN
+      -- index keeps it cheap. Toggle the keyword arm at query time with HYBRID_SEARCH.
+      tsv       tsvector GENERATED ALWAYS AS (to_tsvector('english', content)) STORED,
       created_at timestamptz NOT NULL DEFAULT now()
     )
   `;
+  await sql`CREATE INDEX documents_tsv_idx ON documents USING GIN (tsv)`;
 
   console.log(`▸ Inserting ${chunks.length} rows…`);
   for (let i = 0; i < chunks.length; i++) {

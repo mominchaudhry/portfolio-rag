@@ -20,8 +20,8 @@
 | Vector DB | Neon Postgres 18.4 + `pgvector` 0.8.1 (free tier) — provisioned: project `super-credit-31396538` (`ask-my-portfolio`, aws-us-east-1). Reachability verified. `DATABASE_URL` in `.env.local`; **still needs adding to Vercel env** (do at S3 with the API keys). |
 | Models | Answers: **S5 baseline ran on `anthropic/claude-sonnet-4.6`** (the intended baseline — UNBLOCKED by the $10 gateway top-up this session). `anthropic/claude-haiku-4.5` captured as the companion ablation (env-overridable via `ANSWER_MODEL`; still the runtime default in `lib/rag.ts` so the public widget keeps per-query cost low). Sonnet 4.6 stays the answer model (good enough at ~$0.003/Q); **Opus 4.8 is a back-pocket option only** (too expensive — test in S6 only if retrieval levers fall short). All via **Vercel AI Gateway** — NB gateway ids are DOTTED (`claude-sonnet-4.6`), not hyphenated. · Embeddings: `openai/text-embedding-3-small` **routed through the AI Gateway** (S2 — OpenAI-direct hit a quota wall) · Eval: **Promptfoo + Claude-as-judge** (judge fixed to `claude-sonnet-4.6`) |
 | Credentials | **`AI_GATEWAY_API_KEY`** is the primary model credential (embeddings + answers + eval judge); in `.env.local`, **still needs adding to Vercel env** for the live demo (carry-over). **Gateway now has PAID credit — user topped up $10 (the $10 minimum) this session** → premium models unblocked + per-model rate limit lifted; a full 48-Q eval run ≈ $0.15 answers + judge, so ~$10 covers many S6 runs. Auto top-up stays OFF (credit just runs dry if exhausted). Direct `OPENAI_API_KEY`/`ANTHROPIC_API_KEY` are optional fallback only. |
-| Headline metric | **S5 baseline (Sonnet 4.6):** answer correctness **91.2%**, faithfulness/groundedness **97.1%**, **0% hallucination** + **100% refusal accuracy** on the unanswerable set; ~$0.003/Q, p95 5.8s. Config: heading chunking · exact KNN top-5 · no rerank. _S6 will report the before→after delta._ Full scorecard: `evals/README.md`. |
-| Overall status | **S5 DONE** — versioned 48-Q eval set + one-command Promptfoo + Claude-as-judge harness (`npm run eval`); baseline recorded on Sonnet 4.6 (canonical) **and** Haiku 4.5 (companion ablation), committed under `evals/results/`. Build/lint clean. Next: S6 (improve retrieval — hybrid + rerank — and record the delta vs this baseline). |
+| Headline metric | **S6 improved (Sonnet 4.6):** answer correctness **100%** (↑ from 91.2%), faithfulness/groundedness **100%** (↑97.1%), context recall **100%** (↑91.2%), overall pass **97.9%** (↑89.6%) — while holding **0% hallucination + 100% refusal accuracy**. Cost flat (~$0.0037/Q) and p95 *faster* (5.8s→4.8s). Config: **chunking v2 (drop header chunks + heading-path prefix) + hybrid retrieval (vector + tsvector keyword, RRF)** · top-5 · thr 0.3. Per-lever before/after delta + the S5 baseline: `evals/README.md`; live scorecard `evals/results/latest.md`. |
+| Overall status | **S6 DONE** — two retrieval levers, each flag-gated and measured independently against the S5 baseline (held judge/rubrics/eval-set fixed): **chunking v2** (+5.9 correctness) then **hybrid search** (→100% correctness/faithfulness/context-recall). Improved config is the shipped default (`CHUNK_STRATEGY=v2`, `HYBRID_SEARCH=1`); baseline reproducible via flags. Build/lint clean; results committed under `evals/results/`. Next: S7 (README + architecture diagram + scorecard, flip Vercel SSO off, deploy, add prod env vars + rate limiting). |
 
 **One-liner:** A cited, streaming chat assistant embedded in the portfolio that
 answers questions about Momin (experience, projects, skills) using RAG over his own
@@ -113,7 +113,7 @@ portfolio-rag/
 | S3 | Retrieval + grounded generation (streaming + citations) | DONE |
 | S4 | Chat UI widget | DONE |
 | S5 | Eval set (30–60 Q&A) + harness + **baseline numbers** | DONE |
-| S6 | Improve retrieval (rerank / better chunking / hybrid) + re-run evals; capture delta | TODO |
+| S6 | Improve retrieval (rerank / better chunking / hybrid) + re-run evals; capture delta | DONE |
 | S7 | Polish, README + architecture diagram + scorecard, deploy | TODO |
 | S8 | Embed widget into the portfolio + add to `local.ts` | TODO |
 | S9 | Stretch: nightly CI eval gate, conversation memory, hybrid search | optional/stretch |
@@ -555,7 +555,7 @@ Next:      S6 — improve retrieval (hybrid pgvector + tsvector first, then a re
 
 ---
 
-### S6 — Improve retrieval & capture the delta · `TODO`
+### S6 — Improve retrieval & capture the delta · `DONE`
 **Goal:** A measurable before/after improvement, which is the headline metric.
 **Prerequisites:** S5 done (baseline exists).
 **Working method:** put each retrieval/generation change **behind a flag** so baseline vs
@@ -604,7 +604,66 @@ out-ranking detail chunks), so order the levers by expected lift accordingly.
 **Definition of done:** Improved config beats the S5 baseline on at least answer correctness
 and/or faithfulness; **each lever's delta recorded with real numbers**; scorecard screenshot
 saved to the repo. (Sonnet stays the answer model unless a back-pocket Opus test materially wins.)
-**Handoff notes:** _empty_
+**Handoff notes:**
+```
+Done:      Landed the two highest-leverage retrieval levers, each behind a flag, and recorded a
+           clean per-lever before/after vs the S5 baseline (judge/rubrics/eval-set held fixed at
+           Sonnet 4.6 so the deltas are real). HEADLINE (Sonnet 4.6, 48-Q): answer correctness
+           91.2%→100%, faithfulness 97.1%→100%, context-recall 91.2%→100%, overall 89.6%→97.9% —
+           all while holding 0% hallucination + 100% refusal + 0 false-refusals. Cost ~flat
+           ($0.0031→$0.0037/Q); p95 latency *improved* 5.8s→4.8s (tighter context).
+
+           Lever A — CHUNKING v2 (CHUNK_STRATEGY=v2, scripts/chunk.ts): drop header-only chunks
+           (the bare "Work Experience"/"Projects" chunks that out-ranked detail — the exact S5
+           failure) + prefix every chunk with its heading path ("Experience › Clearbridge … ").
+           Δ vs baseline (both vector-only): correctness +5.9, context-recall +5.9 (retrieval_hit
+           −3.0, recovered by B). Re-ingest only.
+           Lever B — HYBRID search (HYBRID_SEARCH=1, lib/rag.ts): RRF fusion of vector KNN +
+           Postgres tsvector keyword ranking. Δ vs chunking-only: correctness/faithfulness/
+           context-recall all → 100%, overall +6.2. In-DB, $0.
+Files:     scripts/chunk.ts (CHUNK_STRATEGY v2: drop header-only + heading-path prefix),
+           scripts/ingest.ts (generated tsv column + GIN index; logs strategy),
+           lib/rag.ts (HYBRID_SEARCH/TOP_K/SIMILARITY_THRESHOLD env flags + RRF hybrid query;
+           guardrail now uses max cosine over retrieved chunks, not chunks[0]),
+           app/api/ask/route.ts + evals/provider.ts (same max-cosine guardrail),
+           evals/run.ts (dynamic config descriptor + writes results/latest.md scorecard),
+           evals/README.md (S6 section + per-lever delta table), evals/results/* (2 new raw +
+           scorecards + latest.md). S5 baseline scorecards kept as the "before".
+Decisions: (a) Keyword arm uses OR semantics — websearch_to_tsquery ANDs every term
+           ('compani' & 'momin' & 'work'), and the first-person corpus rarely contains "Momin"
+           verbatim, so the AND query matched ZERO rows (hybrid silently == vector-only until
+           fixed). Rewrite `&`→`|`; ts_rank_cd still rewards more/rarer term hits. (b) tsv is a
+           GENERATED STORED column built at ingest, so hybrid is a query-time toggle — only
+           chunking changes need a re-ingest. (c) Guardrail input changed from chunks[0].similarity
+           to max cosine over retrieved chunks, because hybrid RRF can reorder so chunks[0] isn't
+           the best cosine match (strictly more correct; baseline behaviour unchanged). (d) Levers
+           A1+A2 only — they already hit 100% on the answer-quality rows, so the reranker (A3),
+           TOP_K/embedding ablations (A4/A5), prompt/Opus (B), and corpus restructuring (D) were
+           NOT needed (Opus stays back-pocket per the brief; not run). (e) Refusal threshold 0.3
+           kept — eval proves 100% refusal/0% hallucination/0 false-refusals across all 3 configs,
+           so it's already optimal; made env-tunable for future. (f) Shipped DEFAULTS are the
+           improved config (CHUNK_STRATEGY=v2, HYBRID_SEARCH=1); baseline reproducible via flags
+           (see evals/README "Retrieval levers"). Widget ANSWER_MODEL default stays Haiku 4.5 for
+           per-query cost (unchanged); the headline/eval is Sonnet 4.6.
+Verify:    `nvm use 20 && npm run build` + `npm run lint` clean. Reproduce the headline:
+           `npm run ingest` (v2 default) then
+           `ANSWER_MODEL=anthropic/claude-sonnet-4.6 npm run eval` → overall ~97.9%, correctness
+           100% (±1–2 pts judge variance); scorecard in evals/results/latest.md. Baseline:
+           `CHUNK_STRATEGY=baseline npm run ingest && CHUNK_STRATEGY=baseline HYBRID_SEARCH=0
+           ANSWER_MODEL=anthropic/claude-sonnet-4.6 npm run eval`. NB re-run `npm run ingest`
+           (v2) afterward to restore the shipped DB state.
+Gotchas:   (1) DB now holds v2 chunks (24 rows, was 26) + a tsv column — if you ran the baseline
+           repro, RE-INGEST with the v2 default before relying on the live pipeline/demo. (2) The
+           one remaining retrieval_hit miss ("What databases…") is the corpus-duplication artifact
+           (resume.md serves it correctly; expected skills.md) — correctness is 100%, so it's a
+           proxy artifact, not a real miss; a corpus lever (D) for S7+ if desired. (3) "Scorecard
+           screenshot" → committed as evals/results/latest.md (markdown table); a real PNG for the
+           portfolio card is an S7 polish item. (4) Eval still needs paid gateway credit (~$0.18/
+           full Sonnet run); two S6 runs spent ~$0.35 of the $10.
+Next:      S7 — README + architecture diagram + the baseline→improved scorecard table; flip Vercel
+           Deployment Protection OFF; add AI_GATEWAY_API_KEY + DATABASE_URL to Vercel env (carry-
+           over) and RE-INGEST/redeploy; add rate limiting. The eval CI gate is S9.
+```
 
 ---
 
@@ -744,6 +803,31 @@ full hybrid (BM25 + vector) retrieval · swap to an open embedding model and com
   - **Baseline recorded** (Sonnet 4.6): correctness 91.2% · faithfulness 97.1% · context-recall 91.2% ·
     retrieval-hit 97.1% · refusal-accuracy 100% · hallucination 0% · overall 89.6% · ~$0.003/Q · p95 5.8s.
     Failures are retrieval-bound (short header chunks out-rank detail) → the explicit S6 target.
+- **S6 (2026-06-29) — two retrieval levers, each flag-gated, measured independently:**
+  - **Chunking v2 (`CHUNK_STRATEGY=v2`):** drop header-only chunks + prefix each chunk with its
+    heading path. The bare "Work Experience"/"Projects" header chunks were the dominant S5 failure
+    (they out-ranked detail). Lever Δ vs baseline (vector-only): correctness +5.9, context-recall
+    +5.9 (retrieval-hit −3.0, later recovered). Re-ingest only, ~free. Default is now v2; baseline
+    reproducible with `CHUNK_STRATEGY=baseline` + re-ingest.
+  - **Hybrid search (`HYBRID_SEARCH=1`):** RRF fusion of pgvector KNN + Postgres `tsvector` keyword
+    ranking (S1.5's planned free in-DB win). The `tsv` is a GENERATED STORED column (built at
+    ingest) so hybrid is a query-time toggle — only chunking changes need a re-ingest. Lever Δ vs
+    chunking-only: correctness/faithfulness/context-recall all → **100%**, overall +6.2. Default on.
+  - **Keyword OR fix (the bug that mattered):** `websearch_to_tsquery` ANDs every term, and the
+    first-person corpus rarely contains the literal "Momin", so the AND query matched ZERO rows —
+    hybrid was silently identical to vector-only until caught. Rewrite `&`→`|` (OR); `ts_rank_cd`
+    still rewards rows hitting more/rarer terms.
+  - **Guardrail input = max cosine over retrieved chunks** (was `chunks[0].similarity`): hybrid RRF
+    can reorder so chunks[0] isn't the best cosine match. Strictly more correct; baseline unchanged.
+  - **Refusal threshold 0.3 kept (env-tunable):** eval proves 100% refusal / 0% hallucination / 0
+    false-refusals across all three configs → already optimal, no separate tune run needed.
+  - **Stopped at A1+A2:** the answer-quality rows already hit 100%, so the reranker (A3),
+    TOP_K/embedding ablations (A4/A5), generation/prompt + Opus (B; Opus stays back-pocket, NOT
+    run), and corpus restructuring (D) were unnecessary. Sonnet 4.6 stays the eval/headline model;
+    the widget's runtime ANSWER_MODEL default stays Haiku 4.5 for per-query cost.
+  - **Improved result (Sonnet 4.6, vs baseline):** correctness 91.2%→100% · faithfulness 97.1%→100%
+    · context-recall 91.2%→100% · retrieval-hit 97.1% (flat) · refusal 100% · hallucination 0% ·
+    overall 89.6%→97.9% · cost ~$0.0037/Q (flat) · p95 5.8s→4.8s. Per-lever table in `evals/README.md`.
 
 ## Open questions / blockers
 - **RESOLVED (S5): AI Gateway free-tier block is gone** — the user topped up **$10** (the minimum),

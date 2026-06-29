@@ -99,7 +99,9 @@ export async function POST(req: Request) {
     return Response.json({ error: "Retrieval failed" }, { status: 500 });
   }
 
-  const topSimilarity = chunks[0]?.similarity ?? 0;
+  // Best cosine similarity among the retrieved chunks (hybrid RRF can reorder them, so
+  // take the max rather than chunks[0]) — this is the guardrail input.
+  const topSimilarity = chunks.reduce((m, c) => Math.max(m, c.similarity), 0);
   const grounded = topSimilarity >= SIMILARITY_THRESHOLD;
 
   const stream = createUIMessageStream<AskUIMessage>({

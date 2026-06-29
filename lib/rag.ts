@@ -27,15 +27,27 @@ export const EMBEDDING_MODEL = "openai/text-embedding-3-small";
  */
 export const ANSWER_MODEL = process.env.ANSWER_MODEL ?? "anthropic/claude-haiku-4.5";
 
-/** Top-k chunks pulled for the grounded prompt. */
-export const TOP_K = 5;
+/** Top-k chunks pulled for the grounded prompt (env-overridable for the S6 ablation). */
+export const TOP_K = Number(process.env.TOP_K ?? 5);
+
+/**
+ * S6 hybrid retrieval: fuse dense vector KNN with Postgres full-text (tsvector) keyword
+ * ranking via Reciprocal Rank Fusion. On by default (it beat vector-only in the S6
+ * eval); set HYBRID_SEARCH=0 to reproduce the S5 vector-only baseline.
+ */
+export const HYBRID_SEARCH = (process.env.HYBRID_SEARCH ?? "1") !== "0";
+/** Per-arm candidate pool fused down to TOP_K. */
+const RETRIEVAL_CANDIDATES = Number(process.env.RETRIEVAL_CANDIDATES ?? 20);
+/** RRF damping constant (standard default). */
+const RRF_K = 60;
 
 /**
  * Refusal guardrail: if the best chunk's cosine similarity is below this, we refuse
- * WITHOUT calling the model (so it can't hallucinate). Conservative baseline — tuned
- * against the unanswerable eval set in S6.
+ * WITHOUT calling the model (so it can't hallucinate). Env-overridable; S6 verified 0.3
+ * keeps refusal accuracy 100% / hallucination 0% with zero false-refusals on the
+ * answerable set, so it stays the default.
  */
-export const SIMILARITY_THRESHOLD = 0.3;
+export const SIMILARITY_THRESHOLD = Number(process.env.SIMILARITY_THRESHOLD ?? 0.3);
 
 export type ChunkMetadata = {
   sourceFile: string;
@@ -136,22 +148,62 @@ async function embedQuery(question: string): Promise<number[]> {
 }
 
 /**
- * Embed the question and return the top-k chunks by cosine similarity
- * (exact KNN — no approximate index; see scripts/ingest.ts for the rationale).
+ * Embed the question and return the top-k chunks. Dense vector KNN by default; when
+ * HYBRID_SEARCH is on, fuse vector + keyword (tsvector) rankings via RRF.
+ * Exact KNN — no approximate index (see scripts/ingest.ts for the rationale).
+ *
+ * The returned rows always carry the chunk's cosine `similarity` (the guardrail input),
+ * even when keyword ranking decided the order.
  */
 export async function retrieve(question: string, topK = TOP_K): Promise<RetrievedChunk[]> {
   const sql = getSql();
   const qVec = toVectorLiteral(await embedQuery(question));
   // pgvector: <=> is cosine distance; similarity = 1 - distance.
-  const rows = (await sql`
-    SELECT
-      id,
-      content,
-      metadata,
-      1 - (embedding <=> ${qVec}::vector) AS similarity
-    FROM documents
-    ORDER BY embedding <=> ${qVec}::vector
+
+  if (!HYBRID_SEARCH) {
+    return (await sql`
+      SELECT id, content, metadata, 1 - (embedding <=> ${qVec}::vector) AS similarity
+      FROM documents
+      ORDER BY embedding <=> ${qVec}::vector
+      LIMIT ${topK}
+    `) as RetrievedChunk[];
+  }
+
+  // Hybrid: rank each arm independently, fuse by Reciprocal Rank Fusion
+  // (score = Σ 1/(RRF_K + rank)), then re-attach cosine similarity for the guardrail.
+  //
+  // Keyword arm uses OR semantics: websearch_to_tsquery ANDs every term, but a question
+  // like "What companies has Momin worked at?" → 'compani' & 'momin' & 'work', and the
+  // first-person corpus rarely contains "Momin" verbatim, so an AND query matches nothing.
+  // Rewriting `&`→`|` makes it match ANY content term; ts_rank_cd still rewards rows that
+  // hit more (and rarer) terms, which is what we want for keyword recall.
+  return (await sql`
+    WITH q AS (
+      SELECT replace(websearch_to_tsquery('english', ${question})::text, '&', '|')::tsquery AS tsq
+    ),
+    vec AS (
+      SELECT id, row_number() OVER (ORDER BY embedding <=> ${qVec}::vector) AS rnk
+      FROM documents
+      ORDER BY embedding <=> ${qVec}::vector
+      LIMIT ${RETRIEVAL_CANDIDATES}
+    ),
+    kw AS (
+      SELECT id, row_number() OVER (
+        ORDER BY ts_rank_cd(tsv, (SELECT tsq FROM q)) DESC
+      ) AS rnk
+      FROM documents, q
+      WHERE tsv @@ q.tsq
+      LIMIT ${RETRIEVAL_CANDIDATES}
+    ),
+    fused AS (
+      SELECT id, SUM(1.0 / (${RRF_K} + rnk)) AS rrf
+      FROM (SELECT id, rnk FROM vec UNION ALL SELECT id, rnk FROM kw) u
+      GROUP BY id
+    )
+    SELECT d.id, d.content, d.metadata,
+           1 - (d.embedding <=> ${qVec}::vector) AS similarity
+    FROM fused f JOIN documents d ON d.id = f.id
+    ORDER BY f.rrf DESC
     LIMIT ${topK}
   `) as RetrievedChunk[];
-  return rows;
 }
