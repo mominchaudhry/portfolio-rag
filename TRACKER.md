@@ -18,7 +18,7 @@
 | Repo URL | https://github.com/mominchaudhry/portfolio-rag |
 | Live demo URL | https://ask-my-portfolio-jjco5b2ux-mominchaudhrys-projects.vercel.app — deploy READY & renders, but **Vercel Deployment Protection (SSO) is ON** → 401 to the public. Flip OFF before sharing (S7). Vercel project `ask-my-portfolio` (`prj_k4hHPUckW5CKXz3SrkxdcqAVEOsJ`), GitHub repo connected for auto-deploy. |
 | Vector DB | Neon Postgres 18.4 + `pgvector` 0.8.1 (free tier) — provisioned: project `super-credit-31396538` (`ask-my-portfolio`, aws-us-east-1). Reachability verified. `DATABASE_URL` in `.env.local`; **still needs adding to Vercel env** (do at S3 with the API keys). |
-| Models | Answers: **S5 baseline ran on `anthropic/claude-sonnet-4.6`** (the intended baseline — UNBLOCKED by the $10 gateway top-up this session). `anthropic/claude-haiku-4.5` captured as the companion ablation (env-overridable via `ANSWER_MODEL`; still the runtime default in `lib/rag.ts` so the public widget keeps per-query cost low). Opus 4.8 is the remaining S6 ablation. All via **Vercel AI Gateway** — NB gateway ids are DOTTED (`claude-sonnet-4.6`), not hyphenated. · Embeddings: `openai/text-embedding-3-small` **routed through the AI Gateway** (S2 — OpenAI-direct hit a quota wall) · Eval: **Promptfoo + Claude-as-judge** (judge fixed to `claude-sonnet-4.6`) |
+| Models | Answers: **S5 baseline ran on `anthropic/claude-sonnet-4.6`** (the intended baseline — UNBLOCKED by the $10 gateway top-up this session). `anthropic/claude-haiku-4.5` captured as the companion ablation (env-overridable via `ANSWER_MODEL`; still the runtime default in `lib/rag.ts` so the public widget keeps per-query cost low). Sonnet 4.6 stays the answer model (good enough at ~$0.003/Q); **Opus 4.8 is a back-pocket option only** (too expensive — test in S6 only if retrieval levers fall short). All via **Vercel AI Gateway** — NB gateway ids are DOTTED (`claude-sonnet-4.6`), not hyphenated. · Embeddings: `openai/text-embedding-3-small` **routed through the AI Gateway** (S2 — OpenAI-direct hit a quota wall) · Eval: **Promptfoo + Claude-as-judge** (judge fixed to `claude-sonnet-4.6`) |
 | Credentials | **`AI_GATEWAY_API_KEY`** is the primary model credential (embeddings + answers + eval judge); in `.env.local`, **still needs adding to Vercel env** for the live demo (carry-over). **Gateway now has PAID credit — user topped up $10 (the $10 minimum) this session** → premium models unblocked + per-model rate limit lifted; a full 48-Q eval run ≈ $0.15 answers + judge, so ~$10 covers many S6 runs. Auto top-up stays OFF (credit just runs dry if exhausted). Direct `OPENAI_API_KEY`/`ANTHROPIC_API_KEY` are optional fallback only. |
 | Headline metric | **S5 baseline (Sonnet 4.6):** answer correctness **91.2%**, faithfulness/groundedness **97.1%**, **0% hallucination** + **100% refusal accuracy** on the unanswerable set; ~$0.003/Q, p95 5.8s. Config: heading chunking · exact KNN top-5 · no rerank. _S6 will report the before→after delta._ Full scorecard: `evals/README.md`. |
 | Overall status | **S5 DONE** — versioned 48-Q eval set + one-command Promptfoo + Claude-as-judge harness (`npm run eval`); baseline recorded on Sonnet 4.6 (canonical) **and** Haiku 4.5 (companion ablation), committed under `evals/results/`. Build/lint clean. Next: S6 (improve retrieval — hybrid + rerank — and record the delta vs this baseline). |
@@ -548,8 +548,9 @@ Gotchas:   (1) The spawned promptfoo child needs the tsx loader — run.ts sets 
 Next:      S6 — improve retrieval (hybrid pgvector + tsvector first, then a reranker) behind a
            flag; re-run `npm run eval` and record the delta vs this baseline (correctness +
            context-recall + retrieval-hit are the rows to move). Also: tune the 0.3 refusal
-           threshold against the unanswerable set, and run the Sonnet-vs-Haiku-vs-Opus answer-
-           model ablation (Opus via one ANSWER_MODEL swap, now that credit exists).
+           threshold against the unanswerable set. Answer model stays Sonnet 4.6 (Haiku 4.5
+           already captured); Opus 4.8 is back-pocket only (too expensive) — test in S6 ONLY if
+           the retrieval levers don't reach the target.
 ```
 
 ---
@@ -557,22 +558,52 @@ Next:      S6 — improve retrieval (hybrid pgvector + tsvector first, then a re
 ### S6 — Improve retrieval & capture the delta · `TODO`
 **Goal:** A measurable before/after improvement, which is the headline metric.
 **Prerequisites:** S5 done (baseline exists).
-**Tasks:**
-1. Pick 1–2 improvements with the biggest expected lift (see S1.5 decision): **hybrid
-   (keyword + vector) retrieval = pgvector + Postgres `tsvector`** (free, in-DB — do this
-   first) and a **reranker** (Cohere Rerank free trial, or a Haiku LLM-reranker). Optionally
-   ablate **semantic/structure-aware chunking**.
-2. Implement behind a flag so baseline vs improved are both runnable.
-2b. **Model ablations (cheap eval-story wins, via AI Gateway one-line swaps):** A/B the
-   **embedding model** (3-small vs Gemini vs open) and the **answer model** (Sonnet vs Haiku 4.5
-   vs Opus 4.8). Record measured deltas + cost — don't pick "best" blind.
-3. Re-run `npm run eval`; **record the delta** (e.g. "answer correctness 72% → 90%").
-4. Tune the refusal threshold from S3 using the unanswerable set; aim for high refusal
-   accuracy with zero hallucinated facts.
-5. Screenshot the scorecard for the portfolio card.
-**Definition of done:** Improved config beats baseline on at least answer correctness
-and/or faithfulness; delta recorded with real numbers; scorecard screenshot saved to
-the repo.
+**Working method:** put each retrieval/generation change **behind a flag** so baseline vs
+improved are both runnable, and **re-run `npm run eval` after each lever** to capture a
+clean per-lever delta. **Hold the eval methodology fixed** (judge = `claude-sonnet-4.6`,
+rubrics, 0.5 pass thresholds) so the deltas reflect real quality, not measurement drift.
+The S5 failures are almost entirely **retrieval-bound** (short header/intro chunks
+out-ranking detail chunks), so order the levers by expected lift accordingly.
+
+**Tasks — the levers to test (A = highest leverage):**
+
+**A. Retrieval levers (do these first — this is where the S5 points are):**
+1. **Chunking** (`scripts/chunk.ts`; baseline `MAX_TOKENS≈700`/`OVERLAP≈100`, split on `##`):
+   drop/merge tiny header-only chunks, **prefix each body chunk with its heading path**, and
+   ablate chunk size + overlap. Directly targets the dominant S5 failure (the bare
+   *"Work Experience"* header chunk out-ranking the company details). Re-ingest only, ~free.
+2. **Hybrid search** = pgvector + Postgres `tsvector` (keyword), fused (e.g. RRF). Free, in-DB —
+   **do this first among the new-code levers.** Catches exact-term queries (companies, "$200/month").
+3. **Reranker:** retrieve a wider top-N (~20) → rerank down to top-5. Cohere Rerank (free trial)
+   or a Haiku LLM-reranker (stays in-stack, pennies/run).
+4. **`TOP_K`** (`lib/rag.ts`, =5): cheap one-line ablation (try 8–10) — recall vs context dilution + token cost.
+5. **Embedding model** (`EMBEDDING_MODEL`): A/B 3-small vs 3-large vs Gemini vs an open model
+   (one swap + re-ingest). Record measured deltas + cost — don't pick "best" blind.
+6. **Query rewriting** (optional/stretch): HyDE / multi-query for vague questions.
+
+**B. Generation levers:**
+7. **System prompt** (`app/api/ask/route.ts`): citation strictness, partial-context handling,
+   conciseness (e.g. the one S5 faithfulness miss where the answer named "Momin" but the chunk didn't).
+8. **Answer model: keep `claude-sonnet-4.6`** (S5 baseline: 91.2% correctness, ~$0.003/Q — good
+   enough; Haiku 4.5 already captured as the cheaper companion). **Opus 4.8 is a BACK-POCKET option
+   ONLY** — too expensive ($5/$25, ~1.6× Sonnet input / 1.7× output) and Sonnet is fine. Test it
+   *only if* the retrieval levers above don't reach the target; do NOT run it as a default ablation.
+
+**C. Guardrail lever:**
+9. **Refusal threshold** (`SIMILARITY_THRESHOLD`, =0.3): tune against the unanswerable set — keep
+   refusal accuracy high with **zero** hallucinated facts AND zero false-refusals on answerable.
+
+**D. Corpus lever (sometimes beats algorithm tuning):**
+10. **Content shape** (`content/*.md`): the bare "Work Experience" header and facts duplicated
+   across `skills.md`/`resume.md` (which is what makes `retrieval_hit` understate) hurt retrieval —
+   restructuring content is a legitimate lever.
+
+11. After each lever: re-run `npm run eval`; **record the delta** (e.g. "correctness 91.2% → X%").
+   The rows with the most headroom are **answer correctness, context-recall, and retrieval-hit**.
+12. Screenshot the final scorecard for the portfolio card.
+**Definition of done:** Improved config beats the S5 baseline on at least answer correctness
+and/or faithfulness; **each lever's delta recorded with real numbers**; scorecard screenshot
+saved to the repo. (Sonnet stays the answer model unless a back-pocket Opus test materially wins.)
 **Handoff notes:** _empty_
 
 ---
